@@ -1,0 +1,22 @@
+{
+  "profiles": {
+    "Client-Mac" : {
+      "commandName": "Executable",
+      "executablePath": "bash",
+      "commandLineArgs": "$(ProjectDir)/scripts/runClient.sh \"$(VINTAGE_STORY)\" $(ProjectDir) $(Configuration)",
+      "workingDirectory": "$(VINTAGE_STORY)"
+    },
+    "Client": {
+      "commandName": "Executable",
+      "executablePath": "dotnet",
+      "commandLineArgs": "\"$(VINTAGE_STORY)/Vintagestory.dll\" --tracelog --addModPath \"$(ProjectDir)/bin/$(Configuration)/Mods\" --addOrigin \"$(ProjectDir)/assets\"",
+      "workingDirectory": "$(VINTAGE_STORY)"
+    },
+    "Server": {
+      "commandName": "Executable",
+      "executablePath": "dotnet",
+      "commandLineArgs": "\"$(VINTAGE_STORY)/VintagestoryServer.dll\" --tracelog --addModPath \"$(ProjectDir)/bin/$(Configuration)/Mods\" --addOrigin \"$(ProjectDir)/assets\"",
+      "workingDirectory": "$(VINTAGE_STORY)"
+    }
+  }
+}
