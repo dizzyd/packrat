@@ -18,7 +18,7 @@ public class GuiDialogStorageBrowser : GuiDialog
     public override bool PrefersUngrabbedMouse => false;
 
     private readonly CompositeInventoryView _compositeInventory;
-    private readonly List<BlockEntityGenericTypedContainer> _containers;
+    private readonly List<BlockEntityContainer> _containers;
     private readonly ICoreClientAPI _capi;
 
     private const int Cols = 10;
@@ -27,6 +27,9 @@ public class GuiDialogStorageBrowser : GuiDialog
     // Search caching for performance
     private Dictionary<int, string> _searchCache;
     private Dictionary<int, string> _searchCacheNames;
+
+    // Store clip bounds for ghost item rendering
+    private ElementBounds _clipBounds;
 
     // Colors for container outlines (cycle through these) - RGB values
     private static readonly double[][] ContainerColors = new double[][]
@@ -44,7 +47,7 @@ public class GuiDialogStorageBrowser : GuiDialog
     public GuiDialogStorageBrowser(
         ICoreClientAPI capi,
         CompositeInventoryView compositeInventory,
-        List<BlockEntityGenericTypedContainer> containers)
+        List<BlockEntityContainer> containers)
         : base(capi)
     {
         _capi = capi;
@@ -109,6 +112,7 @@ public class GuiDialogStorageBrowser : GuiDialog
             // Clipping bounds for scrollable area
             ElementBounds clippingBounds = slotGridBounds.CopyOffsetedSibling();
             clippingBounds.fixedHeight -= 3;
+            _clipBounds = clippingBounds; // Store for ghost rendering
 
             // Dialog bounds with extra width for scrollbar
             ElementBounds dialogBounds = insetBounds
@@ -141,6 +145,8 @@ public class GuiDialogStorageBrowser : GuiDialog
         else
         {
             // No scrollbar needed
+            _clipBounds = null; // No clipping needed
+
             ElementBounds dialogBounds = insetBounds
                 .ForkBoundingParent(elemToDlgPad, elemToDlgPad + 30, elemToDlgPad, elemToDlgPad)
                 .WithAlignment(EnumDialogArea.CenterMiddle);
@@ -170,7 +176,6 @@ public class GuiDialogStorageBrowser : GuiDialog
         // Scale for current GUI scale
         double scale = RuntimeEnv.GUIScale;
         cellSize *= scale;
-        double lineWidth = 3 * scale;
 
         int colorIndex = 0;
         foreach (var (startIndex, count) in _compositeInventory.ContainerBoundaries)
@@ -184,7 +189,7 @@ public class GuiDialogStorageBrowser : GuiDialog
             int endRow = endIndex / Cols;
             int endCol = endIndex % Cols;
 
-            // For simplicity, draw a rectangle around each row segment of this container
+            // Draw a colored background for each row segment of this container
             for (int row = startRow; row <= endRow; row++)
             {
                 int rowStartCol = (row == startRow) ? startCol : 0;
@@ -201,16 +206,10 @@ public class GuiDialogStorageBrowser : GuiDialog
 
                 double radius = 6 * scale;
 
-                // Draw filled background with low opacity
-                ctx.SetSourceRGBA(color[0], color[1], color[2], 0.15);
+                // Draw filled background only
+                ctx.SetSourceRGBA(color[0], color[1], color[2], 0.25);
                 DrawRoundedRectangle(ctx, x, y, width, height, radius);
                 ctx.Fill();
-
-                // Draw border with higher opacity and thickness
-                ctx.SetSourceRGBA(color[0], color[1], color[2], 0.9);
-                ctx.LineWidth = lineWidth;
-                DrawRoundedRectangle(ctx, x + lineWidth/2, y + lineWidth/2, width - lineWidth, height - lineWidth, radius);
-                ctx.Stroke();
             }
 
             colorIndex++;
@@ -281,5 +280,67 @@ public class GuiDialogStorageBrowser : GuiDialog
         }
 
         _capi.World.PlaySoundAt(new AssetLocation("sounds/block/chestclose"), player.Entity);
+    }
+
+    public override void OnRenderGUI(float deltaTime)
+    {
+        base.OnRenderGUI(deltaTime);
+
+        // Render ghost items for empty crate slots
+        var slotGrid = SingleComposer?.GetSlotGrid("slotgrid");
+        if (slotGrid == null) return;
+
+        double pad = GuiElementItemSlotGrid.unscaledSlotPadding;
+        double slotSize = GuiElementPassiveItemSlot.unscaledSlotSize;
+        double cellSize = slotSize + pad;
+        double scale = RuntimeEnv.GUIScale;
+        cellSize *= scale;
+        slotSize *= scale;
+
+        // The slot grid's absX/absY already include scroll offset (via fixedY modification)
+        double gridX = slotGrid.Bounds.absX;
+        double gridY = slotGrid.Bounds.absY;
+
+        // Use stored clip bounds for visibility check, or no clipping if null
+        double visibleTop = _clipBounds?.absY ?? double.MinValue;
+        double visibleBottom = _clipBounds != null ? _clipBounds.absY + _clipBounds.OuterHeight : double.MaxValue;
+
+        // Light ghost effect - ~15% opacity white
+        int ghostColor = (40 << 24) | (255 << 16) | (255 << 8) | 255;
+
+        for (int i = 0; i < _compositeInventory.Count; i++)
+        {
+            var slot = _compositeInventory[i];
+
+            // Only render ghost for empty crate slots
+            if (slot?.Itemstack != null) continue;
+            if (!_compositeInventory.IsSlotInCrate(i)) continue;
+
+            var templateItem = _compositeInventory.GetCrateTemplateItem(i);
+            if (templateItem == null) continue;
+
+            // Calculate slot position (gridY already has scroll applied)
+            int row = i / Cols;
+            int col = i % Cols;
+            double slotX = gridX + col * cellSize + pad * scale / 2;
+            double slotY = gridY + row * cellSize + pad * scale / 2;
+
+            // Skip if outside visible clip area
+            if (slotY + slotSize < visibleTop || slotY > visibleBottom) continue;
+
+            // Render the ghost item using the standard item size
+            double itemSize = GuiElementPassiveItemSlot.unscaledItemSize * scale;
+            _capi.Render.RenderItemstackToGui(
+                new DummySlot(templateItem),
+                slotX + slotSize / 2,
+                slotY + slotSize / 2,
+                100, // z-depth
+                (float)itemSize,
+                ghostColor,
+                shading: true,
+                rotate: false,
+                showStackSize: false
+            );
+        }
     }
 }
