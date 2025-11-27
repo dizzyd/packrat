@@ -146,10 +146,8 @@ public class CompositeInventoryView : InventoryBase
     }
 
     /// <summary>
-    /// Override to implement custom placement preferences:
-    /// 1. Crates with matching items (highest priority)
-    /// 2. Chests with similar items
-    /// 3. Any empty slot
+    /// Override to implement custom placement preferences for chests only.
+    /// Crates are excluded from shift-click targeting due to their single-item-type restriction.
     /// </summary>
     public override WeightedSlot GetBestSuitedSlot(ItemSlot sourceSlot, ItemStackMoveOperation op = null, List<ItemSlot> skipSlots = null)
     {
@@ -167,7 +165,6 @@ public class CompositeInventoryView : InventoryBase
         if (itemCode == null)
             return bestSlot;
 
-        ItemSlot bestCrateSlot = null;
         ItemSlot bestChestSlotWithMatch = null;
         ItemSlot firstEmptySlot = null;
 
@@ -180,7 +177,8 @@ public class CompositeInventoryView : InventoryBase
             if (skipSlots != null && skipSlots.Contains(slot)) continue;
             if (!slot.CanHold(sourceSlot)) continue;
 
-            bool isCrate = _crateInventories.Contains(inv);
+            // Skip crates - only consider chests for shift-click
+            if (_crateInventories.Contains(inv)) continue;
 
             if (slot.Itemstack != null)
             {
@@ -190,55 +188,27 @@ public class CompositeInventoryView : InventoryBase
                     // Can potentially merge - check stack size
                     if (slot.StackSize < slot.Itemstack.Collectible.MaxStackSize)
                     {
-                        if (isCrate)
+                        if (bestChestSlotWithMatch == null)
                         {
-                            // Priority 1: Merge into crate with matching items
-                            bestSlot.slot = slot;
-                            bestSlot.weight = 6;
-                            return bestSlot; // Highest priority, return immediately
-                        }
-                        else if (bestChestSlotWithMatch == null)
-                        {
-                            // Priority 2: Merge into chest with matching items
                             bestChestSlotWithMatch = slot;
                         }
                     }
                 }
             }
-            else
+            else if (firstEmptySlot == null)
             {
-                // Empty slot
-                if (isCrate)
-                {
-                    // Check if crate can accept this item type
-                    if (CanPlaceInCrate(inv, sourceSlot.Itemstack) && bestCrateSlot == null)
-                    {
-                        bestCrateSlot = slot;
-                    }
-                }
-                else if (firstEmptySlot == null)
-                {
-                    firstEmptySlot = slot;
-                }
+                firstEmptySlot = slot;
             }
         }
 
         // Return best match based on priority
-        if (bestCrateSlot != null)
+        if (bestChestSlotWithMatch != null)
         {
-            // Priority 1b: Empty slot in crate that accepts this item type
-            bestSlot.slot = bestCrateSlot;
-            bestSlot.weight = 5;
-        }
-        else if (bestChestSlotWithMatch != null)
-        {
-            // Priority 2: Chest with matching items
             bestSlot.slot = bestChestSlotWithMatch;
             bestSlot.weight = 4;
         }
         else if (firstEmptySlot != null)
         {
-            // Priority 3: Any empty slot
             bestSlot.slot = firstEmptySlot;
             bestSlot.weight = 1;
         }

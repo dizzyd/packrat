@@ -256,10 +256,6 @@ public class GuiDialogStorageBrowser : GuiDialog
     public override void OnGuiOpened()
     {
         base.OnGuiOpened();
-
-        // Register composite inventory so it gets queried during shift-click
-        _capi.World.Player.InventoryManager.OpenInventory(_compositeInventory);
-
         _capi.World.PlaySoundAt(new AssetLocation("sounds/block/chestopen"), _capi.World.Player.Entity);
     }
 
@@ -268,12 +264,6 @@ public class GuiDialogStorageBrowser : GuiDialog
         base.OnGuiClosed();
 
         var player = _capi.World.Player;
-
-        // Notify server that browser is closing (clears server-side filtering)
-        _capi.Network.GetChannel(PackratModSystem.ModId).SendPacket(new CloseBrowserMessage());
-
-        // Unregister composite inventory
-        player.InventoryManager.CloseInventory(_compositeInventory);
 
         foreach (var container in _containers)
         {

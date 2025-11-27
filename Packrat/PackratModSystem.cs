@@ -62,8 +62,6 @@ public class PackratModSystem : ModSystem
     private static GuiDialogStorageBrowser _browserDialog;
     private static int _pendingCrateConfirmation; // Number of crates waiting for server confirmation
 
-    // Server-side tracking of browse inventories per player (playerUID -> set of inventory IDs)
-    private static Dictionary<string, HashSet<string>> _serverBrowseInventories = new();
 
     public static string ModId => "packrat";
 
@@ -122,15 +120,12 @@ public class PackratModSystem : ModSystem
 
     private void HandleCloseBrowserRequest(IServerPlayer sender, CloseBrowserMessage msg)
     {
-        _serverBrowseInventories.Remove(sender.PlayerUID);
+        // Currently unused - kept for future server-side cleanup if needed
     }
 
     private void HandleOpenManyRequest(IServerPlayer sender, OpenManyMessage msg)
     {
         int crateCount = 0;
-
-        // Track inventory IDs for this player's browse session
-        var browseInventoryIds = new HashSet<string>();
 
         foreach (var pos in msg.Positions)
         {
@@ -146,26 +141,20 @@ public class PackratModSystem : ModSystem
                 );
                 _serverApi.Network.SendBlockEntityPacket(sender, pos, (int)EnumBlockContainerPacketId.OpenInventory, data);
                 sender.InventoryManager.OpenInventory(typedContainer.Inventory);
-                browseInventoryIds.Add(typedContainer.Inventory.InventoryID);
             }
             else if (be is BlockEntityCrate crate)
             {
                 // Crates - just open the inventory on the server, client accesses directly
                 // (BlockEntityCrate doesn't extend BlockEntityOpenableContainer so no packet handling)
                 sender.InventoryManager.OpenInventory(crate.Inventory);
-                browseInventoryIds.Add(crate.Inventory.InventoryID);
                 crateCount++;
             }
             else if (be is BlockEntityOpenableContainer container)
             {
                 // Fall back to OnPlayerRightClick for other container types
                 container.OnPlayerRightClick(sender, new BlockSelection(pos, BlockFacing.UP, container.Block));
-                browseInventoryIds.Add(container.Inventory.InventoryID);
             }
         }
-
-        // Store the browse inventory IDs for this player (for server-side filtering)
-        _serverBrowseInventories[sender.PlayerUID] = browseInventoryIds;
 
         // Send confirmation back to client that all crate inventories are now open
         if (crateCount > 0)
@@ -454,43 +443,51 @@ public class PackratModSystem : ModSystem
     }
 
     /// <summary>
-    /// Harmony patch to filter real inventories from GetBestSuitedSlot when the browser is open.
-    /// This ensures shift-click goes to the CompositeInventoryView instead of individual containers.
+    /// Harmony postfix to handle crate shift-click targeting:
+    /// - Crates with matching items: high priority (keep original weight)
+    /// - Empty crates: low priority (fallback only)
+    /// - Crates with mismatched items: blocked
     /// </summary>
-    [HarmonyPrefix]
+    [HarmonyPostfix]
     [HarmonyPatch(typeof(InventoryBase), nameof(InventoryBase.GetBestSuitedSlot),
         new Type[] {typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>)})]
-    public static bool GetBestSuitedSlot(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots,
+    public static void GetBestSuitedSlot_CrateHandling(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots,
         InventoryBase __instance, ref WeightedSlot __result)
     {
-        // Let CompositeInventoryView through (only exists on client)
-        if (__instance is CompositeInventoryView)
-            return true;
+        // Only process crate inventories
+        if (__instance.InventoryID == null || !__instance.InventoryID.StartsWith("crate-"))
+            return;
 
-        // CLIENT-SIDE: If browser is open and this is one of the real inventories, skip it
-        if (_browserDialog != null && _browserDialog.IsOpened())
+        // If no valid slot was found, nothing to do
+        if (__result.slot == null)
+            return;
+
+        // Find if crate has any existing items
+        ItemSlot existingSlot = null;
+        for (int i = 0; i < __instance.Count; i++)
         {
-            // If this inventory belongs to one of our open containers, skip it
-            // Compare by InventoryID rather than reference, since inventory objects may be recreated after sync
-            if (_openedContainers.Any(c => c.Inventory?.InventoryID == __instance.InventoryID))
+            if (__instance[i]?.Itemstack != null)
             {
-                __result = new WeightedSlot();
-                return false;
+                existingSlot = __instance[i];
+                break;
             }
         }
 
-        // SERVER-SIDE: Check if this inventory is part of any player's browse session
-        if (_serverApi != null && op?.ActingPlayer != null)
+        if (existingSlot != null && sourceSlot?.Itemstack != null)
         {
-            var playerUID = op.ActingPlayer.PlayerUID;
-            if (_serverBrowseInventories.TryGetValue(playerUID, out var browseIds) &&
-                browseIds.Contains(__instance.InventoryID))
+            // Crate has items - check if source matches
+            if (!sourceSlot.Itemstack.Equals(__instance.Api.World, existingSlot.Itemstack, GlobalConstants.IgnoredStackAttributes))
             {
+                // Item type doesn't match - block this crate entirely
                 __result = new WeightedSlot();
-                return false;
+                return;
             }
+            // Item matches - keep original weight (crate with matching items is highest priority)
         }
-
-        return true;
+        else
+        {
+            // Crate is empty - boost priority above chests (which typically return 1-4)
+            __result.weight = 5f;
+        }
     }
 }
