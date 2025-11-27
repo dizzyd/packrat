@@ -54,8 +54,6 @@ public class GuiDialogStorageBrowser : GuiDialog
         _compositeInventory = compositeInventory;
         _containers = containers;
 
-        capi.Logger.Debug($"[PackRat] Creating browser dialog: {compositeInventory.Count} slots from {containers.Count} containers");
-
         BuildSearchCache();
         ComposeDialog();
     }
@@ -89,8 +87,6 @@ public class GuiDialogStorageBrowser : GuiDialog
         int totalRows = Math.Max(1, (int)Math.Ceiling(totalSlots / (float)Cols));
         int visibleRows = Math.Max(1, Math.Min(totalRows, MaxVisibleRows));
         bool needsScrollbar = totalRows > visibleRows;
-
-        _capi.Logger.Debug($"[PackRat] ComposeDialog: totalSlots={totalSlots}, totalRows={totalRows}, visibleRows={visibleRows}, needsScrollbar={needsScrollbar}");
 
         double pad = GuiElementItemSlotGrid.unscaledSlotPadding;
         double slotSize = GuiElementPassiveItemSlot.unscaledSlotSize;
@@ -163,8 +159,6 @@ public class GuiDialogStorageBrowser : GuiDialog
                 .AddDynamicCustomDraw(outlineBounds, DrawContainerOutlines, "outlines")
                 .Compose();
         }
-
-        _capi.Logger.Debug($"[PackRat] Composer created successfully");
     }
 
     private void DrawContainerOutlines(Context ctx, ImageSurface surface, ElementBounds currentBounds)
@@ -262,6 +256,10 @@ public class GuiDialogStorageBrowser : GuiDialog
     public override void OnGuiOpened()
     {
         base.OnGuiOpened();
+
+        // Register composite inventory so it gets queried during shift-click
+        _capi.World.Player.InventoryManager.OpenInventory(_compositeInventory);
+
         _capi.World.PlaySoundAt(new AssetLocation("sounds/block/chestopen"), _capi.World.Player.Entity);
     }
 
@@ -270,6 +268,13 @@ public class GuiDialogStorageBrowser : GuiDialog
         base.OnGuiClosed();
 
         var player = _capi.World.Player;
+
+        // Notify server that browser is closing (clears server-side filtering)
+        _capi.Network.GetChannel(PackratModSystem.ModId).SendPacket(new CloseBrowserMessage());
+
+        // Unregister composite inventory
+        player.InventoryManager.CloseInventory(_compositeInventory);
+
         foreach (var container in _containers)
         {
             if (container?.Inventory != null && container.Inventory.HasOpened(player))

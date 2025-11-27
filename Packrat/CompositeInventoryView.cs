@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
 
@@ -154,10 +155,17 @@ public class CompositeInventoryView : InventoryBase
     {
         WeightedSlot bestSlot = new WeightedSlot();
 
-        if (sourceSlot?.Itemstack == null) return bestSlot;
+        if (sourceSlot?.Itemstack == null)
+            return bestSlot;
+
+        // If the source slot is FROM one of our inventories, return empty
+        // so items go to the player inventory instead of staying in the browser
+        if (_slotMap.Any(entry => entry.inv[entry.slotId] == sourceSlot))
+            return bestSlot;
 
         var itemCode = sourceSlot.Itemstack.Collectible?.Code;
-        if (itemCode == null) return bestSlot;
+        if (itemCode == null)
+            return bestSlot;
 
         ItemSlot bestCrateSlot = null;
         ItemSlot bestChestSlotWithMatch = null;

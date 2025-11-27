@@ -1,5 +1,5 @@
+using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using HarmonyLib;
 using ProtoBuf;
@@ -8,6 +8,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
+using Vintagestory.Common;
 using Vintagestory.GameContent;
 
 namespace Packrat;
@@ -38,6 +39,11 @@ public class OpenManyConfirmMessage
     public int CrateCount { get; set; }
 }
 
+[ProtoContract(ImplicitFields = ImplicitFields.AllPublic)]
+public class CloseBrowserMessage
+{
+}
+
 [HarmonyPatch]
 public class PackratModSystem : ModSystem
 {
@@ -49,12 +55,15 @@ public class PackratModSystem : ModSystem
     private RoomRegistry _roomSystem;
     private ModSystemBlockReinforcement _reinforcementSystem;
 
-    // Browse mode state
+    // Browse mode state (client-side)
     private static bool _browseMode;
     private static HashSet<BlockPos> _pendingPositions = new();
     private static List<BlockEntityContainer> _openedContainers = new();
     private static GuiDialogStorageBrowser _browserDialog;
     private static int _pendingCrateConfirmation; // Number of crates waiting for server confirmation
+
+    // Server-side tracking of browse inventories per player (playerUID -> set of inventory IDs)
+    private static Dictionary<string, HashSet<string>> _serverBrowseInventories = new();
 
     public static string ModId => "packrat";
 
@@ -73,7 +82,8 @@ public class PackratModSystem : ModSystem
         api.Network
             .RegisterChannel(Mod.Info.ModID)
             .RegisterMessageType(typeof(OpenManyMessage))
-            .RegisterMessageType(typeof(OpenManyConfirmMessage));
+            .RegisterMessageType(typeof(OpenManyConfirmMessage))
+            .RegisterMessageType(typeof(CloseBrowserMessage));
     }
 
     public override void StartClientSide(ICoreClientAPI api)
@@ -98,18 +108,6 @@ public class PackratModSystem : ModSystem
             .SetMessageHandler<OpenManyConfirmMessage>(HandleOpenManyConfirm);
     }
 
-    private void HandleOpenManyConfirm(OpenManyConfirmMessage msg)
-    {
-        _api?.Logger.Debug($"[PackRat] Received crate confirmation: {msg.CrateCount} crates, pending positions: {_pendingPositions.Count}");
-        _pendingCrateConfirmation = 0;
-
-        // If we're still in browse mode and no more pending chest packets, show browser
-        if (_browseMode && _pendingPositions.Count == 0)
-        {
-            _api?.Logger.Debug($"[PackRat] All confirmations and positions received, showing browser");
-            ShowBrowser();
-        }
-    }
 
     public override void StartServerSide(ICoreServerAPI api)
     {
@@ -118,13 +116,21 @@ public class PackratModSystem : ModSystem
 
         api.Network
             .GetChannel(Mod.Info.ModID)
-            .SetMessageHandler<OpenManyMessage>(HandleOpenManyRequest);
+            .SetMessageHandler<OpenManyMessage>(HandleOpenManyRequest)
+            .SetMessageHandler<CloseBrowserMessage>(HandleCloseBrowserRequest);
+    }
+
+    private void HandleCloseBrowserRequest(IServerPlayer sender, CloseBrowserMessage msg)
+    {
+        _serverBrowseInventories.Remove(sender.PlayerUID);
     }
 
     private void HandleOpenManyRequest(IServerPlayer sender, OpenManyMessage msg)
     {
-        _serverApi.Logger.Debug($"Received OpenManyMessage: {msg.Positions.Count}");
         int crateCount = 0;
+
+        // Track inventory IDs for this player's browse session
+        var browseInventoryIds = new HashSet<string>();
 
         foreach (var pos in msg.Positions)
         {
@@ -140,20 +146,26 @@ public class PackratModSystem : ModSystem
                 );
                 _serverApi.Network.SendBlockEntityPacket(sender, pos, (int)EnumBlockContainerPacketId.OpenInventory, data);
                 sender.InventoryManager.OpenInventory(typedContainer.Inventory);
+                browseInventoryIds.Add(typedContainer.Inventory.InventoryID);
             }
             else if (be is BlockEntityCrate crate)
             {
                 // Crates - just open the inventory on the server, client accesses directly
                 // (BlockEntityCrate doesn't extend BlockEntityOpenableContainer so no packet handling)
                 sender.InventoryManager.OpenInventory(crate.Inventory);
+                browseInventoryIds.Add(crate.Inventory.InventoryID);
                 crateCount++;
             }
             else if (be is BlockEntityOpenableContainer container)
             {
                 // Fall back to OnPlayerRightClick for other container types
                 container.OnPlayerRightClick(sender, new BlockSelection(pos, BlockFacing.UP, container.Block));
+                browseInventoryIds.Add(container.Inventory.InventoryID);
             }
         }
+
+        // Store the browse inventory IDs for this player (for server-side filtering)
+        _serverBrowseInventories[sender.PlayerUID] = browseInventoryIds;
 
         // Send confirmation back to client that all crate inventories are now open
         if (crateCount > 0)
@@ -254,7 +266,6 @@ public class PackratModSystem : ModSystem
         var room = _roomSystem.GetRoomForPosition(player.Entity.Pos.AsBlockPos);
         if (room is { ExitCount: 0 })
         {
-            _api.Logger.Debug($"Scanning room for chests: {room} {room.ExitCount}");
             startPos = room.Location.Start.AsBlockPos;
             endPos = room.Location.End.AsBlockPos;
             strictCheck = false;
@@ -262,7 +273,6 @@ public class PackratModSystem : ModSystem
         else
         {
             // Not in an enclosed room; use a ranged scan
-            _api.Logger.Debug("Scanning range for chests");
             var range = player.WorldData.PickingRange + 1;
             startPos = (eyePos - range).AsBlockPos;
             endPos = (eyePos + range + 1.0f).AsBlockPos;
@@ -270,35 +280,22 @@ public class PackratModSystem : ModSystem
 
         // Now that we have our area to scan, do the scan - taking into account anything that
         // might be blocking the player's ability to interact with the storage
-        var stopwatch = Stopwatch.StartNew();
         accessor.WalkBlocks(startPos, endPos, (block, x, y, z) =>
         {
-            var blockPos = new BlockPos(x, y, z);
-
-            // Check what kind of block entity this is for debugging
-            var be = accessor.GetBlockEntity(blockPos);
-            if (be != null)
-            {
-                var blockCenter = new Vec3d(x + 0.5, y + 0.5, z + 0.5);
-                var distance = player.Entity.Pos.DistanceTo(blockCenter);
-                if (distance <= 5.1)
-                {
-                    var isOpenable = be is BlockEntityOpenableContainer;
-                    _api.Logger.Debug($"[PackRat] BlockEntity at {blockPos}: block={block.GetType().Name}/{block.Code}, entity={be.GetType().Name}, isOpenable={isOpenable}, dist={distance:F1}");
-                }
-            }
-
             // Don't bother with any blocks that aren't a container
             if (block is not BlockGenericTypedContainer && block is not BlockContainer && block is not BlockCrate) return;
 
+            var blockPos = new BlockPos(x, y, z);
+
             // Don't bother with any containers that are out of reach
-            var blockCenter2 = new Vec3d(x + 0.5, y + 0.5, z + 0.5);
-            if (player.Entity.Pos.DistanceTo(blockCenter2) > 5.1) return;
+            var blockCenter = new Vec3d(x + 0.5, y + 0.5, z + 0.5);
+            if (player.Entity.Pos.DistanceTo(blockCenter) > 5.1) return;
 
             // Try multiple points on the container to check visibility
-            if (strictCheck && !HasLineOfSightTo(player, blockCenter2)) return;
+            if (strictCheck && !HasLineOfSightTo(player, blockCenter)) return;
 
             // Check for block entity - support GenericTypedContainer, GenericContainer, and Crate
+            var be = accessor.GetBlockEntity(blockPos);
             if (be is not BlockEntityGenericTypedContainer && be is not BlockEntityGenericContainer && be is not BlockEntityCrate) return;
 
             // Check reinforcement system permits access
@@ -309,10 +306,6 @@ public class PackratModSystem : ModSystem
             }
         });
 
-        stopwatch.Stop();
-        _api.Logger.Debug(
-            $"Open all blocks finished in {stopwatch.ElapsedMilliseconds} - Strict mode: {strictCheck}");
-
         if (chests.Count > 0)
         {
             // Enter browse mode - Harmony patch will intercept OpenInventory packets
@@ -322,22 +315,18 @@ public class PackratModSystem : ModSystem
             _pendingCrateConfirmation = 0;
 
             // Separate containers by type - only BlockEntityOpenableContainer uses packets
-            var chestsToOpen = new List<BlockEntityContainer>();
-            var cratesDirectAccess = new List<BlockEntityContainer>();
+            int crateCount = 0;
 
             foreach (var chest in chests)
             {
                 if (chest is BlockEntityOpenableContainer)
                 {
                     _pendingPositions.Add(chest.Pos.Copy());
-                    chestsToOpen.Add(chest);
-                    _api.Logger.Debug($"[PackRat] Added pending position (chest): {chest.Pos}");
                 }
                 else
                 {
                     // Crates don't use the packet system - access inventory directly
-                    cratesDirectAccess.Add(chest);
-                    _api.Logger.Debug($"[PackRat] Direct access (crate): {chest.Pos}");
+                    crateCount++;
                 }
             }
 
@@ -345,9 +334,7 @@ public class PackratModSystem : ModSystem
             _openedContainers.AddRange(chests);
 
             // Track crate confirmation - we need to wait for server to confirm crates are open
-            _pendingCrateConfirmation = cratesDirectAccess.Count;
-
-            _api.Logger.Debug($"[PackRat] Entering browse mode, expecting {_pendingPositions.Count} inventory packets, {cratesDirectAccess.Count} crate confirmations");
+            _pendingCrateConfirmation = crateCount;
 
             // Send request to server to open ALL container inventories
             var msg = OpenManyMessage.FromContainers(chests);
@@ -359,13 +346,22 @@ public class PackratModSystem : ModSystem
             // - Crate confirmation is received (via HandleOpenManyConfirm)
             if (_pendingPositions.Count == 0 && _pendingCrateConfirmation == 0)
             {
-                _api.Logger.Debug($"[PackRat] No packets or confirmations to wait for, showing browser immediately");
                 ShowBrowser();
             }
-            // Browser will be shown when all pending items are resolved
         }
 
         return true;
+    }
+
+    private void HandleOpenManyConfirm(OpenManyConfirmMessage msg)
+    {
+        _pendingCrateConfirmation = 0;
+
+        // If we're still in browse mode and no more pending chest packets, show browser
+        if (_browseMode && _pendingPositions.Count == 0)
+        {
+            ShowBrowser();
+        }
     }
 
     private static void ShowBrowser()
@@ -426,13 +422,9 @@ public class PackratModSystem : ModSystem
         nameof(BlockEntityOpenableContainer.OnReceivedServerPacket))]
     public static bool OnReceivedServerPacket(int packetid, byte[] data, BlockEntityOpenableContainer __instance)
     {
-        _api?.Logger.Debug($"[PackRat] OnReceivedServerPacket: packetid={packetid}, browseMode={_browseMode}, pos={__instance.Pos}");
-
-        // Only suppress OpenInventory packets (5000) when in browse mode
+        // Only suppress OpenInventory packets when in browse mode
         if (_browseMode && packetid == (int)EnumBlockContainerPacketId.OpenInventory)
         {
-            _api?.Logger.Debug($"[PackRat] Received inventory data for container at {__instance.Pos}");
-
             // Process the inventory data
             var blockContainer = BlockEntityContainerOpen.FromBytes(data);
             __instance.Inventory.FromTreeAttributes(blockContainer.Tree);
@@ -446,13 +438,11 @@ public class PackratModSystem : ModSystem
             }
 
             // Remove from pending
-            var removed = _pendingPositions.Remove(__instance.Pos);
-            _api?.Logger.Debug($"[PackRat] Removed {__instance.Pos}: {removed}, Remaining pending: {_pendingPositions.Count}, pending crate confirmation: {_pendingCrateConfirmation}");
+            _pendingPositions.Remove(__instance.Pos);
 
             // If all inventories received AND crate confirmation received, show the browser
             if (_pendingPositions.Count == 0 && _pendingCrateConfirmation == 0)
             {
-                _api?.Logger.Debug($"[PackRat] All inventories and confirmations received, showing browser");
                 ShowBrowser();
             }
 
@@ -463,12 +453,44 @@ public class PackratModSystem : ModSystem
         return true;
     }
 
+    /// <summary>
+    /// Harmony patch to filter real inventories from GetBestSuitedSlot when the browser is open.
+    /// This ensures shift-click goes to the CompositeInventoryView instead of individual containers.
+    /// </summary>
     [HarmonyPrefix]
-    [HarmonyPatch(typeof(BlockEntityOpenableContainer),
-        nameof(BlockEntityOpenableContainer.OnReceivedClientPacket))]
-    public static bool OnReceivedClientPacket(int packetid, byte[] data)
+    [HarmonyPatch(typeof(InventoryBase), nameof(InventoryBase.GetBestSuitedSlot),
+        new Type[] {typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>)})]
+    public static bool GetBestSuitedSlot(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots,
+        InventoryBase __instance, ref WeightedSlot __result)
     {
-        _api?.Logger.Debug($"OnReceivedClientPacket: {packetid}");
+        // Let CompositeInventoryView through (only exists on client)
+        if (__instance is CompositeInventoryView)
+            return true;
+
+        // CLIENT-SIDE: If browser is open and this is one of the real inventories, skip it
+        if (_browserDialog != null && _browserDialog.IsOpened())
+        {
+            // If this inventory belongs to one of our open containers, skip it
+            // Compare by InventoryID rather than reference, since inventory objects may be recreated after sync
+            if (_openedContainers.Any(c => c.Inventory?.InventoryID == __instance.InventoryID))
+            {
+                __result = new WeightedSlot();
+                return false;
+            }
+        }
+
+        // SERVER-SIDE: Check if this inventory is part of any player's browse session
+        if (_serverApi != null && op?.ActingPlayer != null)
+        {
+            var playerUID = op.ActingPlayer.PlayerUID;
+            if (_serverBrowseInventories.TryGetValue(playerUID, out var browseIds) &&
+                browseIds.Contains(__instance.InventoryID))
+            {
+                __result = new WeightedSlot();
+                return false;
+            }
+        }
+
         return true;
     }
 }
