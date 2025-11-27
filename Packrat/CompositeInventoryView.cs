@@ -270,6 +270,16 @@ public class CompositeInventoryView : InventoryBase
         if (slotId < 0 || slotId >= _slotMap.Count) return null;
 
         var (realInv, realSlotId) = _slotMap[slotId];
+
+        // Check crate restrictions before allowing placement
+        if (_crateInventories.Contains(realInv) && sourceSlot?.Itemstack != null)
+        {
+            if (!CanPlaceInCrate(realInv, sourceSlot.Itemstack))
+            {
+                return null;  // Block the operation - item type doesn't match crate contents
+            }
+        }
+
         return realInv.ActivateSlot(realSlotId, sourceSlot, ref op);
     }
 
