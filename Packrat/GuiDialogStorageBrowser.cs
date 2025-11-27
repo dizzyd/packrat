@@ -24,10 +24,6 @@ public class GuiDialogStorageBrowser : GuiDialog
     private const int Cols = 10;
     private const int MaxVisibleRows = 8;
 
-    // Search caching for performance
-    private Dictionary<int, string> _searchCache;
-    private Dictionary<int, string> _searchCacheNames;
-
     // Store clip bounds for ghost item rendering
     private ElementBounds _clipBounds;
 
@@ -54,31 +50,7 @@ public class GuiDialogStorageBrowser : GuiDialog
         _compositeInventory = compositeInventory;
         _containers = containers;
 
-        BuildSearchCache();
         ComposeDialog();
-    }
-
-    private void BuildSearchCache()
-    {
-        _searchCache = new Dictionary<int, string>();
-        _searchCacheNames = new Dictionary<int, string>();
-
-        for (int i = 0; i < _compositeInventory.Count; i++)
-        {
-            var slot = _compositeInventory[i];
-            if (slot?.Itemstack != null)
-            {
-                var stack = slot.Itemstack;
-                var name = stack.GetName() ?? "";
-                _searchCacheNames[i] = name;
-                _searchCache[i] = name.ToLowerInvariant();
-            }
-            else
-            {
-                _searchCacheNames[i] = "";
-                _searchCache[i] = "";
-            }
-        }
     }
 
     private void ComposeDialog()

@@ -5,8 +5,8 @@
     "authors": [
         "dizzyd"
     ],
-    "description": "To be added",
-    "version": "1.0.0",
+    "description": "Access multiple containers from a single dialog",
+    "version": "0.0.5",
     "dependencies": {
         "game": ""
     }

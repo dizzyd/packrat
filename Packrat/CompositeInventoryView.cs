@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
 
@@ -58,18 +57,6 @@ public class CompositeInventoryView : InventoryBase
     }
 
     /// <summary>
-    /// Remove an inventory from this composite view
-    /// </summary>
-    public void RemoveInventory(InventoryBase inv)
-    {
-        if (!_sourceInventories.Contains(inv)) return;
-
-        _sourceInventories.Remove(inv);
-        _crateInventories.Remove(inv);
-        _slotMap.RemoveAll(entry => entry.inv == inv);
-    }
-
-    /// <summary>
     /// Clear all inventories from the view
     /// </summary>
     public new void Clear()
@@ -79,11 +66,6 @@ public class CompositeInventoryView : InventoryBase
         _containerBoundaries.Clear();
         _crateInventories.Clear();
     }
-
-    /// <summary>
-    /// Get the list of source inventories
-    /// </summary>
-    public IReadOnlyList<InventoryBase> SourceInventories => _sourceInventories;
 
     /// <summary>
     /// Check if a virtual slot is in a crate inventory
@@ -143,77 +125,6 @@ public class CompositeInventoryView : InventoryBase
         {
             // Read-only view - slots belong to real inventories
         }
-    }
-
-    /// <summary>
-    /// Override to implement custom placement preferences for chests only.
-    /// Crates are excluded from shift-click targeting due to their single-item-type restriction.
-    /// </summary>
-    public override WeightedSlot GetBestSuitedSlot(ItemSlot sourceSlot, ItemStackMoveOperation op = null, List<ItemSlot> skipSlots = null)
-    {
-        WeightedSlot bestSlot = new WeightedSlot();
-
-        if (sourceSlot?.Itemstack == null)
-            return bestSlot;
-
-        // If the source slot is FROM one of our inventories, return empty
-        // so items go to the player inventory instead of staying in the browser
-        if (_slotMap.Any(entry => entry.inv[entry.slotId] == sourceSlot))
-            return bestSlot;
-
-        var itemCode = sourceSlot.Itemstack.Collectible?.Code;
-        if (itemCode == null)
-            return bestSlot;
-
-        ItemSlot bestChestSlotWithMatch = null;
-        ItemSlot firstEmptySlot = null;
-
-        for (int i = 0; i < _slotMap.Count; i++)
-        {
-            var (inv, slotId) = _slotMap[i];
-            var slot = inv[slotId];
-
-            if (slot == null) continue;
-            if (skipSlots != null && skipSlots.Contains(slot)) continue;
-            if (!slot.CanHold(sourceSlot)) continue;
-
-            // Skip crates - only consider chests for shift-click
-            if (_crateInventories.Contains(inv)) continue;
-
-            if (slot.Itemstack != null)
-            {
-                // Slot has items - check for merge possibility
-                if (slot.Itemstack.Collectible?.Code?.Equals(itemCode) == true)
-                {
-                    // Can potentially merge - check stack size
-                    if (slot.StackSize < slot.Itemstack.Collectible.MaxStackSize)
-                    {
-                        if (bestChestSlotWithMatch == null)
-                        {
-                            bestChestSlotWithMatch = slot;
-                        }
-                    }
-                }
-            }
-            else if (firstEmptySlot == null)
-            {
-                firstEmptySlot = slot;
-            }
-        }
-
-        // Return best match based on priority
-        if (bestChestSlotWithMatch != null)
-        {
-            bestSlot.slot = bestChestSlotWithMatch;
-            bestSlot.weight = 4;
-        }
-        else if (firstEmptySlot != null)
-        {
-            bestSlot.slot = firstEmptySlot;
-            bestSlot.weight = 1;
-        }
-
-        return bestSlot;
     }
 
     /// <summary>

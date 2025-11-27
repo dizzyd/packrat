@@ -39,11 +39,6 @@ public class OpenManyConfirmMessage
     public int CrateCount { get; set; }
 }
 
-[ProtoContract(ImplicitFields = ImplicitFields.AllPublic)]
-public class CloseBrowserMessage
-{
-}
-
 [HarmonyPatch]
 public class PackratModSystem : ModSystem
 {
@@ -80,8 +75,7 @@ public class PackratModSystem : ModSystem
         api.Network
             .RegisterChannel(Mod.Info.ModID)
             .RegisterMessageType(typeof(OpenManyMessage))
-            .RegisterMessageType(typeof(OpenManyConfirmMessage))
-            .RegisterMessageType(typeof(CloseBrowserMessage));
+            .RegisterMessageType(typeof(OpenManyConfirmMessage));
     }
 
     public override void StartClientSide(ICoreClientAPI api)
@@ -114,13 +108,7 @@ public class PackratModSystem : ModSystem
 
         api.Network
             .GetChannel(Mod.Info.ModID)
-            .SetMessageHandler<OpenManyMessage>(HandleOpenManyRequest)
-            .SetMessageHandler<CloseBrowserMessage>(HandleCloseBrowserRequest);
-    }
-
-    private void HandleCloseBrowserRequest(IServerPlayer sender, CloseBrowserMessage msg)
-    {
-        // Currently unused - kept for future server-side cleanup if needed
+            .SetMessageHandler<OpenManyMessage>(HandleOpenManyRequest);
     }
 
     private void HandleOpenManyRequest(IServerPlayer sender, OpenManyMessage msg)
