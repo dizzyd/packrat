@@ -443,9 +443,36 @@ public class PackratModSystem : ModSystem
     }
 
     /// <summary>
+    /// Harmony prefix to block container-to-container transfers.
+    /// When shift-clicking FROM a container, items should go to player inventory, not other containers.
+    /// </summary>
+    [HarmonyPrefix]
+    [HarmonyPatch(typeof(InventoryBase), nameof(InventoryBase.GetBestSuitedSlot),
+        new Type[] {typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>)})]
+    public static bool GetBestSuitedSlot_BlockContainerToContainer(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots,
+        InventoryBase __instance, ref WeightedSlot __result)
+    {
+        // Check if source is from a container (chest or crate)
+        var sourceInvId = sourceSlot?.Inventory?.InventoryID;
+        if (sourceInvId != null && (sourceInvId.StartsWith("chest-") || sourceInvId.StartsWith("crate-")))
+        {
+            // Source is from a container - block all other containers as destinations
+            // This forces items to go to player inventory
+            if (__instance.InventoryID != null &&
+                (__instance.InventoryID.StartsWith("chest-") || __instance.InventoryID.StartsWith("crate-")))
+            {
+                __result = new WeightedSlot();
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Harmony postfix to handle crate shift-click targeting:
     /// - Crates with matching items: high priority (keep original weight)
-    /// - Empty crates: low priority (fallback only)
+    /// - Empty crates: boosted priority above chests
     /// - Crates with mismatched items: blocked
     /// </summary>
     [HarmonyPostfix]
