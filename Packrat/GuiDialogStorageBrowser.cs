@@ -37,6 +37,9 @@ public class GuiDialogStorageBrowser : GuiDialog
     // Dimming texture for non-matching slots
     private LoadedTexture _dimTexture;
 
+    // Flag to suppress key press after focusing search
+    private bool _suppressNextKeyPress;
+
     // Colors for container outlines (cycle through these) - RGB values
     private static readonly double[][] ContainerColors = new double[][]
     {
@@ -135,67 +138,53 @@ public class GuiDialogStorageBrowser : GuiDialog
         string title = Lang.Get($"{PackratModSystem.ModId}:browser-title");
         string searchPlaceholder = Lang.Get($"{PackratModSystem.ModId}:search-placeholder");
 
+        ElementBounds dialogBounds = ElementStdBounds.AutosizedMainDialog
+            .WithAlignment(EnumDialogArea.CenterMiddle);
+
+        // Build the composer - scrollbar branch uses clipping, non-scrollbar doesn't
+        var composer = _capi.Gui
+            .CreateCompo(DialogName, dialogBounds)
+            .AddShadedDialogBG(bgBounds)
+            .AddDialogTitleBar(title, OnTitleBarClose)
+            .BeginChildElements(bgBounds)
+                .AddTextInput(searchBounds, OnSearchTextChanged, CairoFont.WhiteSmallText(), "searchbox")
+                .AddInset(insetBounds);
+
         if (needsScrollbar)
         {
-            // Clipping bounds for scrollable area
             ElementBounds clippingBounds = slotGridBounds.CopyOffsetedSibling();
             clippingBounds.fixedHeight -= 3;
-
-            // Dialog bounds - auto-sized with extra width for scrollbar
-            ElementBounds dialogBounds = ElementStdBounds.AutosizedMainDialog
-                .WithAlignment(EnumDialogArea.CenterMiddle);
-
-            // Scrollbar bounds to the right of inset
             ElementBounds scrollbarBounds = ElementStdBounds.VerticalScrollbar(insetBounds);
-
-            // Custom draw bounds for container outlines (same as full grid)
             ElementBounds outlineBounds = fullGridBounds.CopyOffsetedSibling();
 
-            SingleComposer = _capi.Gui
-                .CreateCompo(DialogName, dialogBounds)
-                .AddShadedDialogBG(bgBounds)
-                .AddDialogTitleBar(title, OnTitleBarClose)
-                .BeginChildElements(bgBounds)
-                    .AddTextInput(searchBounds, OnSearchTextChanged, CairoFont.WhiteSmallText(), "searchbox")
-                    .AddInset(insetBounds)
-                    .AddVerticalScrollbar(OnScrollbarNewValue, scrollbarBounds, "scrollbar")
-                    .BeginClip(clippingBounds)
-                        .AddItemSlotGrid(_compositeInventory, DoSendPacket, Cols, fullGridBounds, "slotgrid")
-                        .AddDynamicCustomDraw(outlineBounds, DrawContainerOutlines, "outlines")
-                    .EndClip()
-                .EndChildElements()
-                .Compose();
+            composer
+                .AddVerticalScrollbar(OnScrollbarNewValue, scrollbarBounds, "scrollbar")
+                .BeginClip(clippingBounds)
+                    .AddItemSlotGrid(_compositeInventory, DoSendPacket, Cols, fullGridBounds, "slotgrid")
+                    .AddDynamicCustomDraw(outlineBounds, DrawContainerOutlines, "outlines")
+                .EndClip();
+        }
+        else
+        {
+            ElementBounds outlineBounds = slotGridBounds.CopyOffsetedSibling();
 
+            composer
+                .AddItemSlotGrid(_compositeInventory, DoSendPacket, Cols, slotGridBounds, "slotgrid")
+                .AddDynamicCustomDraw(outlineBounds, DrawContainerOutlines, "outlines");
+        }
+
+        SingleComposer = composer.EndChildElements().Compose();
+
+        if (needsScrollbar)
+        {
             SingleComposer.GetScrollbar("scrollbar").SetHeights(
                 (float)slotGridBounds.fixedHeight,
                 (float)(fullGridBounds.fixedHeight + pad)
             );
-
-            SingleComposer.GetTextInput("searchbox").SetPlaceHolderText(searchPlaceholder);
         }
-        else
-        {
-            // Dialog bounds - auto-sized (no scrollbar needed)
-            ElementBounds dialogBounds = ElementStdBounds.AutosizedMainDialog
-                .WithAlignment(EnumDialogArea.CenterMiddle);
 
-            // Custom draw bounds for container outlines
-            ElementBounds outlineBounds = slotGridBounds.CopyOffsetedSibling();
-
-            SingleComposer = _capi.Gui
-                .CreateCompo(DialogName, dialogBounds)
-                .AddShadedDialogBG(bgBounds)
-                .AddDialogTitleBar(title, OnTitleBarClose)
-                .BeginChildElements(bgBounds)
-                    .AddTextInput(searchBounds, OnSearchTextChanged, CairoFont.WhiteSmallText(), "searchbox")
-                    .AddInset(insetBounds)
-                    .AddItemSlotGrid(_compositeInventory, DoSendPacket, Cols, slotGridBounds, "slotgrid")
-                    .AddDynamicCustomDraw(outlineBounds, DrawContainerOutlines, "outlines")
-                .EndChildElements()
-                .Compose();
-
-            SingleComposer.GetTextInput("searchbox").SetPlaceHolderText(searchPlaceholder);
-        }
+        SingleComposer.GetTextInput("searchbox").SetPlaceHolderText(searchPlaceholder);
+        SingleComposer.UnfocusOwnElements();
     }
 
     private void DrawContainerOutlines(Context ctx, ImageSurface surface, ElementBounds currentBounds)
@@ -394,6 +383,37 @@ public class GuiDialogStorageBrowser : GuiDialog
         _dimTexture = null;
 
         _capi.World.PlaySoundAt(new AssetLocation("sounds/block/chestclose"), player.Entity);
+    }
+
+    public override void OnKeyDown(KeyEvent args)
+    {
+        // Focus search box on /
+        if (args.KeyCode == (int)GlKeys.Slash)
+        {
+            var searchBox = SingleComposer?.GetTextInput("searchbox");
+            if (searchBox != null && !searchBox.HasFocus)
+            {
+                SingleComposer.UnfocusOwnElements();
+                searchBox.OnFocusGained();
+                _suppressNextKeyPress = true;
+                args.Handled = true;
+                return;
+            }
+        }
+
+        base.OnKeyDown(args);
+    }
+
+    public override void OnKeyPress(KeyEvent args)
+    {
+        if (_suppressNextKeyPress)
+        {
+            _suppressNextKeyPress = false;
+            args.Handled = true;
+            return;
+        }
+
+        base.OnKeyPress(args);
     }
 
     public override void OnRenderGUI(float deltaTime)
