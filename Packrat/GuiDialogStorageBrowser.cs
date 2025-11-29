@@ -278,11 +278,6 @@ public class GuiDialogStorageBrowser : GuiDialog
                 if (category.ToString().ToLowerInvariant().Contains(_searchFilter))
                     _matchedFoodCategories.Add(category);
             }
-
-            _capi.Logger.Debug("[Packrat] Search filter: '{0}', matched materials: [{1}], matched food categories: [{2}]",
-                _searchFilter,
-                string.Join(", ", _matchedMaterials),
-                string.Join(", ", _matchedFoodCategories));
         }
     }
 
@@ -335,13 +330,6 @@ public class GuiDialogStorageBrowser : GuiDialog
             if (_matchedFoodCategories.Contains(collectible.NutritionProps.FoodCategory))
                 return true;
         }
-
-        // Debug: log what we checked for non-matching items
-        _capi.Logger.Debug("[Packrat] No match for '{0}' (code: {1}, blockMaterial: {2}, foodCategory: {3})",
-            itemName,
-            collectible.Code?.Path ?? "null",
-            collectible is Block b ? b.BlockMaterial.ToString() : "n/a",
-            collectible.NutritionProps?.FoodCategory.ToString() ?? "null");
 
         return false;
     }
