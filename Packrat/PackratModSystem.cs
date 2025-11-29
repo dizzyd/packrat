@@ -243,12 +243,15 @@ public class PackratModSystem : ModSystem
         var room = _roomSystem.GetRoomForPosition(player.Entity.Pos.AsBlockPos);
         if (room is { ExitCount: 0 })
         {
+            _api.Logger.Debug("Using room for search");
             startPos = room.Location.Start.AsBlockPos;
             endPos = room.Location.End.AsBlockPos;
             strictCheck = false;
         }
         else
         {
+            _api.Logger.Debug("Using ranged scan for search");
+
             // Not in an enclosed room; use a ranged scan
             var range = player.WorldData.PickingRange + 1;
             startPos = (eyePos - range).AsBlockPos;
@@ -264,13 +267,15 @@ public class PackratModSystem : ModSystem
 
             var blockPos = new BlockPos(x, y, z);
 
-            // Don't bother with any containers that are out of reach
+            // When using ranged scan, don't bother with any containers that are out of reach or that the player
+            // can't see directly
             var blockCenter = new Vec3d(x + 0.5, y + 0.5, z + 0.5);
-            if (player.Entity.Pos.DistanceTo(blockCenter) > 5.1) return;
-
-            // Try multiple points on the container to check visibility
-            if (strictCheck && !HasLineOfSightTo(player, blockCenter)) return;
-
+            if (strictCheck)
+            {
+                if (player.Entity.Pos.DistanceTo(blockCenter) > 5.1) return;
+                if (!HasLineOfSightTo(player, blockCenter)) return;
+            } 
+            
             // Check for block entity - support GenericTypedContainer, GenericContainer, and Crate
             var be = accessor.GetBlockEntity(blockPos);
             if (be is not BlockEntityGenericTypedContainer && be is not BlockEntityGenericContainer && be is not BlockEntityCrate) return;
