@@ -1,5 +1,5 @@
 {
-    "packrat:openall": "Open All Containers",
+    "packrat:openall": "[PackRat] Open All Containers",
     "packrat:browser-title": "Storage Browser",
     "packrat:browser-status": "{0} containers, {1} slots",
     "packrat:search-placeholder": "Search items..."
