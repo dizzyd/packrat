@@ -29,6 +29,8 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     // Search filter
     private string _searchFilter = "";
+    private List<EnumBlockMaterial> _matchedMaterials = new();
+    private List<EnumFoodCategory> _matchedFoodCategories = new();
 
     // Dimming texture for non-matching slots
     private LoadedTexture _dimTexture;
@@ -257,11 +259,37 @@ public class GuiDialogStorageBrowser : GuiDialog
     private void OnSearchTextChanged(string text)
     {
         _searchFilter = text?.Trim().ToLowerInvariant() ?? "";
+
+        _matchedMaterials.Clear();
+        _matchedFoodCategories.Clear();
+
+        if (!string.IsNullOrEmpty(_searchFilter))
+        {
+            // Cache which EnumBlockMaterial values match the filter
+            foreach (EnumBlockMaterial material in Enum.GetValues(typeof(EnumBlockMaterial)))
+            {
+                if (material.ToString().ToLowerInvariant().Contains(_searchFilter))
+                    _matchedMaterials.Add(material);
+            }
+
+            // Cache which EnumFoodCategory values match the filter
+            foreach (EnumFoodCategory category in Enum.GetValues(typeof(EnumFoodCategory)))
+            {
+                if (category.ToString().ToLowerInvariant().Contains(_searchFilter))
+                    _matchedFoodCategories.Add(category);
+            }
+
+            _capi.Logger.Debug("[Packrat] Search filter: '{0}', matched materials: [{1}], matched food categories: [{2}]",
+                _searchFilter,
+                string.Join(", ", _matchedMaterials),
+                string.Join(", ", _matchedFoodCategories));
+        }
     }
 
     /// <summary>
     /// Check if a slot matches the current search filter.
     /// Empty filter matches everything. Empty slots never match a non-empty filter.
+    /// Matches against item name, material variants, and food category.
     /// </summary>
     private bool SlotMatchesFilter(int slotIndex)
     {
@@ -276,15 +304,46 @@ public class GuiDialogStorageBrowser : GuiDialog
                 var templateItem = _compositeInventory.GetCrateTemplateItem(slotIndex);
                 if (templateItem != null)
                 {
-                    string templateName = templateItem.GetName().ToLowerInvariant();
-                    return templateName.Contains(_searchFilter);
+                    return ItemMatchesFilter(templateItem.Collectible, templateItem.GetName());
                 }
             }
             return false;
         }
 
-        string itemName = slot.Itemstack.GetName().ToLowerInvariant();
-        return itemName.Contains(_searchFilter);
+        return ItemMatchesFilter(slot.Itemstack.Collectible, slot.Itemstack.GetName());
+    }
+
+    /// <summary>
+    /// Check if a collectible matches the search filter by name, variants, code parts, or food category.
+    /// </summary>
+    private bool ItemMatchesFilter(CollectibleObject collectible, string itemName)
+    {
+        // Check item name
+        if (itemName.ToLowerInvariant().Contains(_searchFilter))
+            return true;
+
+        // Check block material (for blocks)
+        if (collectible is Block block && _matchedMaterials.Count > 0)
+        {
+            if (_matchedMaterials.Contains(block.BlockMaterial))
+                return true;
+        }
+
+        // Check food category
+        if (collectible.NutritionProps != null && _matchedFoodCategories.Count > 0)
+        {
+            if (_matchedFoodCategories.Contains(collectible.NutritionProps.FoodCategory))
+                return true;
+        }
+
+        // Debug: log what we checked for non-matching items
+        _capi.Logger.Debug("[Packrat] No match for '{0}' (code: {1}, blockMaterial: {2}, foodCategory: {3})",
+            itemName,
+            collectible.Code?.Path ?? "null",
+            collectible is Block b ? b.BlockMaterial.ToString() : "n/a",
+            collectible.NutritionProps?.FoodCategory.ToString() ?? "null");
+
+        return false;
     }
 
     private void DoSendPacket(object packet)
