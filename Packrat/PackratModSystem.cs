@@ -213,7 +213,6 @@ public class PackratModSystem : ModSystem
     public bool OpenAll(KeyCombination _)
     {
         var player = _clientApi.World.Player;
-        if (player.WorldData.CurrentGameMode == EnumGameMode.Creative) return false;
 
         // If browser is already open, close it
         if (_browserDialog != null && _browserDialog.IsOpened())
