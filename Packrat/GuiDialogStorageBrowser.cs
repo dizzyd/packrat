@@ -4,6 +4,7 @@ using Cairo;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
+using Vintagestory.API.MathTools;
 using Vintagestory.GameContent;
 
 namespace Packrat;
@@ -23,6 +24,7 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     private const int Cols = 10;
     private const int MaxVisibleRows = 8;
+    private const string DialogName = "packrat-storage-browser";
 
     // Store inset bounds for scissor clipping in OnRenderGUI
     private ElementBounds _insetBounds;
@@ -63,6 +65,33 @@ public class GuiDialogStorageBrowser : GuiDialog
         var dimBitmap = new BakedBitmap { TexturePixels = new[] { dimColor }, Width = 1, Height = 1 };
         _dimTexture = new LoadedTexture(capi);
         _capi.Render.LoadTexture(dimBitmap, ref _dimTexture, false, 0, false);
+
+        // Make dialog movable by default (set initial position if none stored)
+        if (_capi.Gui.GetDialogPosition(DialogName) == null)
+        {
+            // Calculate approximate dialog size for centering
+            int totalSlots = _compositeInventory.Count;
+            int totalRows = Math.Max(1, (int)Math.Ceiling(totalSlots / (float)Cols));
+            int visibleRows = Math.Max(1, Math.Min(totalRows, MaxVisibleRows));
+            bool needsScrollbar = totalRows > visibleRows;
+
+            double pad = GuiElementItemSlotGrid.unscaledSlotPadding;
+            double slotSize = GuiElementPassiveItemSlot.unscaledSlotSize;
+            double elemToDlgPad = GuiStyle.ElementToDialogPadding;
+            double titleBarHeight = 25;
+            double searchBoxHeight = 30;
+
+            double gridWidth = (slotSize + pad) * Cols;
+            double gridHeight = (slotSize + pad) * visibleRows;
+            double scrollbarWidth = needsScrollbar ? 20 : 0;
+
+            double dialogWidth = gridWidth + 12 + elemToDlgPad * 2 + scrollbarWidth;
+            double dialogHeight = titleBarHeight + searchBoxHeight + 8 + gridHeight + 12 + elemToDlgPad * 2;
+
+            int x = (int)((_capi.Render.FrameWidth - dialogWidth * RuntimeEnv.GUIScale) / 2 / RuntimeEnv.GUIScale);
+            int y = (int)((_capi.Render.FrameHeight - dialogHeight * RuntimeEnv.GUIScale) / 2 / RuntimeEnv.GUIScale);
+            _capi.Gui.SetDialogPosition(DialogName, new Vec2i(x, y));
+        }
 
         ComposeDialog();
     }
@@ -123,7 +152,7 @@ public class GuiDialogStorageBrowser : GuiDialog
             ElementBounds outlineBounds = fullGridBounds.CopyOffsetedSibling();
 
             SingleComposer = _capi.Gui
-                .CreateCompo("packrat-storage-browser", dialogBounds)
+                .CreateCompo(DialogName, dialogBounds)
                 .AddShadedDialogBG(bgBounds)
                 .AddDialogTitleBar(title, OnTitleBarClose)
                 .BeginChildElements(bgBounds)
@@ -154,7 +183,7 @@ public class GuiDialogStorageBrowser : GuiDialog
             ElementBounds outlineBounds = slotGridBounds.CopyOffsetedSibling();
 
             SingleComposer = _capi.Gui
-                .CreateCompo("packrat-storage-browser", dialogBounds)
+                .CreateCompo(DialogName, dialogBounds)
                 .AddShadedDialogBG(bgBounds)
                 .AddDialogTitleBar(title, OnTitleBarClose)
                 .BeginChildElements(bgBounds)
