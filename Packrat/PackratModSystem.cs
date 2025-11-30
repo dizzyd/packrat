@@ -354,14 +354,19 @@ public class PackratModSystem : ModSystem
         {
             blocksWalked++;
 
-            // Skip blocks that don't have a block entity class
-            if (block.EntityClass == null) return;
-
-            // Check for block entity that implements IBlockEntityContainer
-            // This catches vanilla chests, crates, SortableStorage, ContainersBundle, etc.
+            // Check for block entity that is a storage container
             blockPos.Set(x, y, z);
             var be = accessor.GetBlockEntity(blockPos);
             if (be is not BlockEntityContainer container) return;
+
+            // Filter to storage containers using type checks:
+            // - BlockEntityCrate: vanilla crates
+            // - BlockEntityOpenableContainer: vanilla chests, ContainersBundle
+            // - TryGetTypedContainerInfo: SortableStorage and other typed container mods
+            bool isStorageContainer = be is BlockEntityCrate
+                || be is BlockEntityOpenableContainer
+                || TryGetTypedContainerInfo(be, out string _, out int _);
+            if (!isStorageContainer) return;
 
             containersFound++;
 
