@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using HarmonyLib;
 using ProtoBuf;
 using Vintagestory.API.Client;
@@ -19,17 +21,8 @@ public class OpenManyMessage
     [ProtoMember(1)]
     public List<BlockPos> Positions { get; set; }
 
-    public static OpenManyMessage FromContainers(List<BlockEntityContainer> containers)
-    {
-        var msg = new OpenManyMessage();
-        msg.Positions = new List<BlockPos>();
-        foreach (var c in containers)
-        {
-            msg.Positions.Add(c.Pos);
-        }
-
-        return msg;
-    }
+    public static OpenManyMessage FromContainers(List<BlockEntityContainer> containers) =>
+        new() { Positions = containers.Select(c => c.Pos).ToList() };
 }
 
 [ProtoContract(ImplicitFields = ImplicitFields.AllPublic)]
@@ -57,6 +50,9 @@ public class PackratModSystem : ModSystem
     private static GuiDialogStorageBrowser _browserDialog;
     private static int _pendingCrateConfirmation; // Number of crates waiting for server confirmation
 
+    // Reflection cache for typed container info
+    private static readonly Dictionary<Type, (FieldInfo title, FieldInfo columns)?> _typedContainerCache = new();
+
 
     public static string ModId => "packrat";
 
@@ -69,6 +65,9 @@ public class PackratModSystem : ModSystem
         {
             _harmony = new Harmony(Mod.Info.ModID);
             _harmony.PatchAll();
+
+            // Conditionally patch SortableStorage if it's loaded
+            PatchSortableStorageIfLoaded();
         }
 
         // Register network channel and also register our messages
@@ -76,6 +75,34 @@ public class PackratModSystem : ModSystem
             .RegisterChannel(Mod.Info.ModID)
             .RegisterMessageType(typeof(OpenManyMessage))
             .RegisterMessageType(typeof(OpenManyConfirmMessage));
+    }
+
+    /// <summary>
+    /// Conditionally patches SortableStorage's container class if the mod is loaded
+    /// </summary>
+    private void PatchSortableStorageIfLoaded()
+    {
+        // Try to find SortableStorage's base container class
+        var sortableType = AccessTools.TypeByName("SortableStorage.ModSystem.BESortableOpenableContainer");
+        if (sortableType == null) return;
+
+        // Find the OnReceivedServerPacket method
+        var targetMethod = sortableType.GetMethod("OnReceivedServerPacket",
+            BindingFlags.Public | BindingFlags.Instance,
+            null,
+            new[] { typeof(int), typeof(byte[]) },
+            null);
+
+        if (targetMethod == null) return;
+
+        // Get our prefix method
+        var prefixMethod = typeof(PackratModSystem).GetMethod(nameof(OnReceivedServerPacket_Generic),
+            BindingFlags.Public | BindingFlags.Static);
+
+        if (prefixMethod == null) return;
+
+        _harmony.Patch(targetMethod, prefix: new HarmonyMethod(prefixMethod));
+        _api.Logger.Notification("PackRat: SortableStorage detected, patched for compatibility");
     }
 
     public override void StartClientSide(ICoreClientAPI api)
@@ -118,29 +145,31 @@ public class PackratModSystem : ModSystem
         foreach (var pos in msg.Positions)
         {
             var be = _serverApi.World.BlockAccessor.GetBlockEntity(pos);
-            if (be is BlockEntityGenericTypedContainer typedContainer)
-            {
-                // Directly send inventory data - bypasses the retrieveOnly/empty check that crates have
-                var data = BlockEntityContainerOpen.ToBytes(
-                    "BlockEntityInventory",
-                    Lang.Get(typedContainer.dialogTitleLangCode),
-                    (byte)typedContainer.quantityColumns,
-                    typedContainer.Inventory
-                );
-                _serverApi.Network.SendBlockEntityPacket(sender, pos, (int)EnumBlockContainerPacketId.OpenInventory, data);
-                sender.InventoryManager.OpenInventory(typedContainer.Inventory);
-            }
-            else if (be is BlockEntityCrate crate)
+            if (be is not BlockEntityContainer container) continue;
+
+            if (IsCrate(container))
             {
                 // Crates - just open the inventory on the server, client accesses directly
-                // (BlockEntityCrate doesn't extend BlockEntityOpenableContainer so no packet handling)
-                sender.InventoryManager.OpenInventory(crate.Inventory);
+                sender.InventoryManager.OpenInventory(container.Inventory);
                 crateCount++;
             }
-            else if (be is BlockEntityOpenableContainer container)
+            // Check if this container has typed container properties (dialogTitleLangCode, quantityColumns)
+            else if (TryGetTypedContainerInfo(be, out var titleLangCode, out var columns))
             {
-                // Fall back to OnPlayerRightClick for other container types
-                container.OnPlayerRightClick(sender, new BlockSelection(pos, BlockFacing.UP, container.Block));
+                // Send inventory packet - works for vanilla, SortableStorage, ContainersBundle, etc.
+                var data = BlockEntityContainerOpen.ToBytes(
+                    "BlockEntityInventory",
+                    Lang.Get(titleLangCode),
+                    (byte)columns,
+                    container.Inventory
+                );
+                _serverApi.Network.SendBlockEntityPacket(sender, pos, (int)EnumBlockContainerPacketId.OpenInventory, data);
+                sender.InventoryManager.OpenInventory(container.Inventory);
+            }
+            // Fall back to OnPlayerRightClick if available
+            else if (be is BlockEntityOpenableContainer openable)
+            {
+                openable.OnPlayerRightClick(sender, new BlockSelection(pos, BlockFacing.UP, openable.Block));
             }
         }
 
@@ -152,6 +181,58 @@ public class PackratModSystem : ModSystem
                 sender
             );
         }
+    }
+
+    /// <summary>
+    /// Check if a container is a crate (by inventory ID prefix)
+    /// </summary>
+    private static bool IsCrate(BlockEntityContainer container) =>
+        container.Inventory?.InventoryID?.StartsWith("crate-") == true;
+
+    /// <summary>
+    /// Reset browse mode state
+    /// </summary>
+    private static void ResetBrowseMode()
+    {
+        _browseMode = false;
+        _pendingPositions.Clear();
+        _pendingCrateConfirmation = 0;
+    }
+
+    /// <summary>
+    /// Attempts to get typed container info (dialogTitleLangCode, quantityColumns) via reflection.
+    /// Works for vanilla BlockEntityGenericTypedContainer, SortableStorage, ContainersBundle, etc.
+    /// </summary>
+    private static bool TryGetTypedContainerInfo(BlockEntity be, out string titleLangCode, out int columns)
+    {
+        titleLangCode = null;
+        columns = 4;
+
+        var type = be.GetType();
+
+        // Check cache first
+        if (!_typedContainerCache.TryGetValue(type, out var cached))
+        {
+            // Look for dialogTitleLangCode and quantityColumns fields
+            var titleField = type.GetField("dialogTitleLangCode", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            var columnsField = type.GetField("quantityColumns", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+            cached = (titleField != null && columnsField != null)
+                ? (titleField, columnsField)
+                : null;
+            _typedContainerCache[type] = cached;
+        }
+
+        if (cached == null) return false;
+
+        titleLangCode = cached.Value.title.GetValue(be) as string;
+        if (string.IsNullOrEmpty(titleLangCode)) return false;
+
+        var columnsValue = cached.Value.columns.GetValue(be);
+        if (columnsValue is int c)
+            columns = c;
+
+        return true;
     }
 
     private bool HasLineOfSightTo(IPlayer player, Vec3d targetPoint)
@@ -170,7 +251,7 @@ public class PackratModSystem : ModSystem
                 return false;
 
             // Other containers don't block
-            if (block is BlockGenericTypedContainer)
+            if (block is BlockContainer or BlockCrate)
                 return false;
 
             // Allow seeing through transparent blocks
@@ -187,8 +268,9 @@ public class PackratModSystem : ModSystem
 
             // Check collision box volume; if the volume is small (50% or less), allow seeing
             // through it. This handles chiseled blocks, furniture, fences, etc.
-            var totalVolume = block.CollisionBoxes.Sum(box =>
-                (box.X2 - box.X1) * (box.Y2 - box.Y1) * (box.Z2 - box.Z1));
+            float totalVolume = 0;
+            foreach (var box in block.CollisionBoxes)
+                totalVolume += (box.X2 - box.X1) * (box.Y2 - box.Y1) * (box.Z2 - box.Z1);
             if (totalVolume < 0.5f) // 50% threshold
                 return false;
 
@@ -228,7 +310,7 @@ public class PackratModSystem : ModSystem
         BlockPos startPos;
         BlockPos endPos;
 
-        var eyePos = player.Entity.Pos.XYZ.Add(player.Entity.LocalEyePos - 0.5f);
+        var eyePos = player.Entity.Pos.XYZ.Add(player.Entity.LocalEyePos);
 
         // If the player is in a room, use the room to bound scanning and skip the heavy
         // line of sight checking. If there is a column, wall, etc. in that room that
@@ -248,25 +330,40 @@ public class PackratModSystem : ModSystem
         }
         else
         {
-
             // Not in an enclosed room; use a ranged scan
-            var range = player.WorldData.PickingRange + 1;
-            startPos = (eyePos - range).AsBlockPos;
-            endPos = (eyePos + range + 1.0f).AsBlockPos;
+            // Cap to 6 blocks since we reject anything > 5.1 blocks away anyway
+            startPos = (eyePos - 6).AsBlockPos;
+            endPos = (eyePos + 6).AsBlockPos;
         }
 
         // Only scan from player's feet level and up (allow one block below for chests player stands on)
         var playerFeetY = player.Entity.Pos.AsBlockPos.Y - 1;
         startPos.Y = Math.Max(startPos.Y, playerFeetY);
 
+        // Timing instrumentation
+        var scanTimer = Stopwatch.StartNew();
+        long losTimeMs = 0;
+        int blocksWalked = 0;
+        int containersFound = 0;
+        int losChecks = 0;
+
         // Now that we have our area to scan, do the scan - taking into account anything that
         // might be blocking the player's ability to interact with the storage
+        var blockPos = new BlockPos(0, 0, 0); // Reuse to avoid allocations
         accessor.WalkBlocks(startPos, endPos, (block, x, y, z) =>
         {
-            // Don't bother with any blocks that aren't a container
-            if (block is not BlockGenericTypedContainer && block is not BlockContainer && block is not BlockCrate) return;
+            blocksWalked++;
 
-            var blockPos = new BlockPos(x, y, z);
+            // Skip blocks that don't have a block entity class
+            if (block.EntityClass == null) return;
+
+            // Check for block entity that implements IBlockEntityContainer
+            // This catches vanilla chests, crates, SortableStorage, ContainersBundle, etc.
+            blockPos.Set(x, y, z);
+            var be = accessor.GetBlockEntity(blockPos);
+            if (be is not BlockEntityContainer container) return;
+
+            containersFound++;
 
             // When using ranged scan, don't bother with any containers that are out of reach or that the player
             // can't see directly
@@ -274,20 +371,27 @@ public class PackratModSystem : ModSystem
             if (strictCheck)
             {
                 if (player.Entity.Pos.DistanceTo(blockCenter) > 5.1) return;
-                if (!HasLineOfSightTo(player, blockCenter)) return;
-            } 
-            
-            // Check for block entity - support GenericTypedContainer, GenericContainer, and Crate
-            var be = accessor.GetBlockEntity(blockPos);
-            if (be is not BlockEntityGenericTypedContainer && be is not BlockEntityGenericContainer && be is not BlockEntityCrate) return;
+
+                losChecks++;
+                var losTimer = Stopwatch.StartNew();
+                bool hasLos = HasLineOfSightTo(player, blockCenter);
+                losTimeMs += losTimer.ElapsedMilliseconds;
+                if (!hasLos) return;
+            }
 
             // Check reinforcement system permits access
             bool isLocked = _reinforcementSystem.IsLockedForInteract(blockPos, player);
-            if (!isLocked && be is BlockEntityContainer container)
+            if (!isLocked)
             {
                 chests.Add(container);
             }
         });
+
+        scanTimer.Stop();
+        _api.Logger.Debug($"PackRat scan: {scanTimer.ElapsedMilliseconds}ms total, " +
+                          $"{blocksWalked} blocks walked, {containersFound} containers found, " +
+                          $"{losChecks} LOS checks ({losTimeMs}ms), {chests.Count} accessible, " +
+                          $"strictCheck={strictCheck}");
 
         if (chests.Count > 0)
         {
@@ -297,20 +401,14 @@ public class PackratModSystem : ModSystem
             _openedContainers.Clear();
             _pendingCrateConfirmation = 0;
 
-            // Separate containers by type - only BlockEntityOpenableContainer uses packets
+            // Separate containers: crates use direct access, everything else uses packets
             int crateCount = 0;
-
             foreach (var chest in chests)
             {
-                if (chest is BlockEntityOpenableContainer)
-                {
-                    _pendingPositions.Add(chest.Pos.Copy());
-                }
-                else
-                {
-                    // Crates don't use the packet system - access inventory directly
+                if (IsCrate(chest))
                     crateCount++;
-                }
+                else
+                    _pendingPositions.Add(chest.Pos.Copy());
             }
 
             // Store all containers for the browser
@@ -351,9 +449,7 @@ public class PackratModSystem : ModSystem
     {
         if (_clientApi == null || _openedContainers.Count == 0)
         {
-            _browseMode = false;
-            _pendingPositions.Clear();
-            _pendingCrateConfirmation = 0;
+            ResetBrowseMode();
             return;
         }
 
@@ -362,17 +458,16 @@ public class PackratModSystem : ModSystem
         var player = _clientApi.World.Player;
         foreach (var container in _openedContainers)
         {
-            if (container?.Inventory != null)
-            {
-                bool isCrate = container is BlockEntityCrate;
-                composite.AddInventory(container.Inventory, isCrate);
+            if (container?.Inventory == null) continue;
 
-                // Make sure crate inventories are opened on the client
-                // (Chests are opened via the Harmony patch, but crates bypass that)
-                if (isCrate && !container.Inventory.HasOpened(player))
-                {
-                    player.InventoryManager.OpenInventory(container.Inventory);
-                }
+            bool isCrate = IsCrate(container);
+            composite.AddInventory(container.Inventory, isCrate);
+
+            // Make sure crate inventories are opened on the client
+            // (Chests are opened via the Harmony patch, but crates bypass that)
+            if (isCrate && !container.Inventory.HasOpened(player))
+            {
+                player.InventoryManager.OpenInventory(container.Inventory);
             }
         }
 
@@ -380,60 +475,64 @@ public class PackratModSystem : ModSystem
         if (composite.Count == 0)
         {
             _api?.Logger.Warning("PackRat: No slots found in containers, not opening browser");
-            _browseMode = false;
-            _pendingPositions.Clear();
-            _pendingCrateConfirmation = 0;
+            ResetBrowseMode();
             return;
         }
 
         // Create and show the browser dialog
         _browserDialog = new GuiDialogStorageBrowser(_clientApi, composite, _openedContainers);
         _browserDialog.TryOpen();
-
-        // Exit browse mode
-        _browseMode = false;
-        _pendingPositions.Clear();
-        _pendingCrateConfirmation = 0;
+        ResetBrowseMode();
     }
 
     /// <summary>
     /// Harmony patch to intercept server packets and suppress individual container dialogs
-    /// when in browse mode
+    /// when in browse mode. This handles vanilla BlockEntityOpenableContainer and mods that extend it
+    /// (like ContainersBundle).
     /// </summary>
     [HarmonyPrefix]
     [HarmonyPatch(typeof(BlockEntityOpenableContainer),
         nameof(BlockEntityOpenableContainer.OnReceivedServerPacket))]
     public static bool OnReceivedServerPacket(int packetid, byte[] data, BlockEntityOpenableContainer __instance)
     {
+        return HandleServerPacket(packetid, data, __instance.Inventory, __instance.Pos);
+    }
+
+    /// <summary>
+    /// Generic Harmony patch for mods that don't extend BlockEntityOpenableContainer
+    /// (like SortableStorage). Applied dynamically at runtime if the mod is loaded.
+    /// </summary>
+    public static bool OnReceivedServerPacket_Generic(int packetid, byte[] data, BlockEntityContainer __instance)
+    {
+        return HandleServerPacket(packetid, data, __instance.Inventory, __instance.Pos);
+    }
+
+    /// <summary>
+    /// Common handler for intercepting OpenInventory packets in browse mode
+    /// </summary>
+    private static bool HandleServerPacket(int packetid, byte[] data, InventoryBase inventory, BlockPos pos)
+    {
         // Only suppress OpenInventory packets when in browse mode
-        if (_browseMode && packetid == (int)EnumBlockContainerPacketId.OpenInventory)
+        if (!_browseMode || packetid != (int)EnumBlockContainerPacketId.OpenInventory)
+            return true;
+
+        // Process the inventory data
+        var blockContainer = BlockEntityContainerOpen.FromBytes(data);
+        inventory.FromTreeAttributes(blockContainer.Tree);
+        inventory.ResolveBlocksOrItems();
+
+        // Open the inventory client-side
+        _clientApi?.World?.Player?.InventoryManager.OpenInventory(inventory);
+
+        // Remove from pending and show browser if all received
+        _pendingPositions.Remove(pos);
+        if (_pendingPositions.Count == 0 && _pendingCrateConfirmation == 0)
         {
-            // Process the inventory data
-            var blockContainer = BlockEntityContainerOpen.FromBytes(data);
-            __instance.Inventory.FromTreeAttributes(blockContainer.Tree);
-            __instance.Inventory.ResolveBlocksOrItems();
-
-            // Open the inventory client-side
-            var player = _clientApi?.World?.Player;
-            if (player != null)
-            {
-                player.InventoryManager.OpenInventory(__instance.Inventory);
-            }
-
-            // Remove from pending
-            _pendingPositions.Remove(__instance.Pos);
-
-            // If all inventories received AND crate confirmation received, show the browser
-            if (_pendingPositions.Count == 0 && _pendingCrateConfirmation == 0)
-            {
-                ShowBrowser();
-            }
-
-            // Return false to skip original method (which would create individual dialog)
-            return false;
+            ShowBrowser();
         }
 
-        return true;
+        // Return false to skip original method (which would create individual dialog)
+        return false;
     }
 
     /// <summary>
