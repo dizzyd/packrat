@@ -53,9 +53,21 @@ public class PackratModSystem : ModSystem
     // Debug logging (toggle with .packratdebug command)
     private static bool _debugLogging;
 
-    // Reflection cache for typed container info
-    private static readonly Dictionary<Type, (FieldInfo title, FieldInfo columns)?> _typedContainerCache = new();
+    // Registry of storage container types to include in scanning
+    private static readonly HashSet<Type> _storageContainerTypes = new();
 
+    // Types that need OnReceivedServerPacket patched (where the method is defined/overridden)
+    private static readonly HashSet<Type> _typesToPatch = new();
+
+    // Mod container types to discover at runtime: (TypeName, NeedsPatch)
+    // NeedsPatch = true if the type has its own OnReceivedServerPacket (not inherited)
+    private static readonly (string TypeName, bool NeedsPatch)[] _modContainerTypes =
+    {
+        // SortableStorage - has its own OnReceivedServerPacket implementation
+        ("SortableStorage.ModSystem.BESortableOpenableContainer", true),
+        // ContainersBundle - extends BlockEntityOpenableContainer, inherits patched method
+        ("ContainersBundle.BlockEntityCBContainer", false),
+    };
 
     public static string ModId => "packrat";
 
@@ -64,13 +76,16 @@ public class PackratModSystem : ModSystem
         base.Start(api);
         _api = api;
 
+        // Initialize container type registry
+        InitializeContainerTypeRegistry();
+
         if (!Harmony.HasAnyPatches(Mod.Info.ModID))
         {
             _harmony = new Harmony(Mod.Info.ModID);
             _harmony.PatchAll();
 
-            // Conditionally patch SortableStorage if it's loaded
-            PatchSortableStorageIfLoaded();
+            // Apply dynamic patches for container types that need OnReceivedServerPacket interception
+            ApplyContainerPatches();
         }
 
         // Register network channel and also register our messages
@@ -81,31 +96,82 @@ public class PackratModSystem : ModSystem
     }
 
     /// <summary>
-    /// Conditionally patches SortableStorage's container class if the mod is loaded
+    /// Initialize the registry of storage container types and types to patch.
     /// </summary>
-    private void PatchSortableStorageIfLoaded()
+    private void InitializeContainerTypeRegistry()
     {
-        // Try to find SortableStorage's base container class
-        var sortableType = AccessTools.TypeByName("SortableStorage.ModSystem.BESortableOpenableContainer");
-        if (sortableType == null) return;
+        // Only initialize once
+        if (_storageContainerTypes.Count > 0) return;
 
-        // Find the OnReceivedServerPacket method
-        var targetMethod = sortableType.GetMethod("OnReceivedServerPacket",
-            BindingFlags.Public | BindingFlags.Instance,
-            null,
-            new[] { typeof(int), typeof(byte[]) },
-            null);
+        // Vanilla storage container types to scan for
+        // Note: BlockEntityOpenableContainer is NOT included (too broad - includes firepits)
+        _storageContainerTypes.Add(typeof(BlockEntityCrate));
+        _storageContainerTypes.Add(typeof(BlockEntityGenericTypedContainer));
 
-        if (targetMethod == null) return;
+        // Vanilla types that need OnReceivedServerPacket patched
+        // BlockEntityOpenableContainer is the base where the method is defined
+        _typesToPatch.Add(typeof(BlockEntityOpenableContainer));
 
-        // Get our prefix method
-        var prefixMethod = typeof(PackratModSystem).GetMethod(nameof(OnReceivedServerPacket_Generic),
+        _api.Logger.Debug("[PackRat] Registered vanilla container types");
+
+        // Discover and add mod container types
+        foreach (var (typeName, needsPatch) in _modContainerTypes)
+        {
+            var type = AccessTools.TypeByName(typeName);
+            if (type != null)
+            {
+                _storageContainerTypes.Add(type);
+                if (needsPatch)
+                {
+                    _typesToPatch.Add(type);
+                }
+                _api.Logger.Notification($"[PackRat] Discovered mod container type: {typeName}");
+            }
+        }
+
+        _api.Logger.Debug($"[PackRat] Total storage types: {_storageContainerTypes.Count}, types to patch: {_typesToPatch.Count}");
+    }
+
+    /// <summary>
+    /// Check if a BlockEntity is a known storage container type.
+    /// Checks the type hierarchy against registered types.
+    /// </summary>
+    private static bool IsStorageContainer(BlockEntity be)
+    {
+        // Check if this type or any of its base types is in our registry
+        var checkType = be.GetType();
+        while (checkType != null && checkType != typeof(object))
+        {
+            if (_storageContainerTypes.Contains(checkType))
+                return true;
+            checkType = checkType.BaseType;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Apply Harmony patches for container types that need OnReceivedServerPacket interception.
+    /// </summary>
+    private void ApplyContainerPatches()
+    {
+        var prefixMethod = typeof(PackratModSystem).GetMethod(nameof(OnReceivedServerPacket_Prefix),
             BindingFlags.Public | BindingFlags.Static);
-
         if (prefixMethod == null) return;
 
-        _harmony.Patch(targetMethod, prefix: new HarmonyMethod(prefixMethod));
-        _api.Logger.Notification("PackRat: SortableStorage detected, patched for compatibility");
+        foreach (var containerType in _typesToPatch)
+        {
+            var targetMethod = containerType.GetMethod("OnReceivedServerPacket",
+                BindingFlags.Public | BindingFlags.Instance,
+                null,
+                new[] { typeof(int), typeof(byte[]) },
+                null);
+
+            if (targetMethod == null) continue;
+
+            _harmony.Patch(targetMethod, prefix: new HarmonyMethod(prefixMethod));
+            _api.Logger.Debug($"[PackRat] Patched {containerType.Name}.OnReceivedServerPacket");
+        }
     }
 
     public override void StartClientSide(ICoreClientAPI api)
@@ -165,23 +231,15 @@ public class PackratModSystem : ModSystem
                 sender.InventoryManager.OpenInventory(container.Inventory);
                 crateCount++;
             }
-            // Check if this container has typed container properties (dialogTitleLangCode, quantityColumns)
-            else if (TryGetTypedContainerInfo(be, out var titleLangCode, out var columns))
-            {
-                // Send inventory packet - works for vanilla, SortableStorage, ContainersBundle, etc.
-                var data = BlockEntityContainerOpen.ToBytes(
-                    "BlockEntityInventory",
-                    Lang.Get(titleLangCode),
-                    (byte)columns,
-                    container.Inventory
-                );
-                _serverApi.Network.SendBlockEntityPacket(sender, pos, (int)EnumBlockContainerPacketId.OpenInventory, data);
-                sender.InventoryManager.OpenInventory(container.Inventory);
-            }
-            // Fall back to OnPlayerRightClick if available
+            // Use OnPlayerRightClick for openable containers (vanilla chests, mod containers, etc.)
             else if (be is BlockEntityOpenableContainer openable)
             {
                 openable.OnPlayerRightClick(sender, new BlockSelection(pos, BlockFacing.UP, openable.Block));
+            }
+            // Fallback: try to invoke OnPlayerRightClick via reflection for mod containers
+            else if (IsStorageContainer(be))
+            {
+                TryInvokeOnPlayerRightClick(be, sender, pos);
             }
         }
 
@@ -202,6 +260,29 @@ public class PackratModSystem : ModSystem
         container.Inventory?.InventoryID?.StartsWith("crate-") == true;
 
     /// <summary>
+    /// Try to invoke OnPlayerRightClick on a block entity via reflection.
+    /// Used for mod containers that don't extend BlockEntityOpenableContainer.
+    /// </summary>
+    private void TryInvokeOnPlayerRightClick(BlockEntity be, IServerPlayer player, BlockPos pos)
+    {
+        var method = be.GetType().GetMethod("OnPlayerRightClick",
+            BindingFlags.Public | BindingFlags.Instance,
+            null,
+            new[] { typeof(IPlayer), typeof(BlockSelection) },
+            null);
+
+        if (method != null)
+        {
+            var blockSel = new BlockSelection(pos, BlockFacing.UP, be.Block);
+            method.Invoke(be, new object[] { player, blockSel });
+        }
+        else
+        {
+            _api.Logger.Warning($"[PackRat] Container at {pos} has no OnPlayerRightClick method");
+        }
+    }
+
+    /// <summary>
     /// Reset browse mode state
     /// </summary>
     private static void ResetBrowseMode()
@@ -209,42 +290,6 @@ public class PackratModSystem : ModSystem
         _browseMode = false;
         _pendingPositions.Clear();
         _pendingCrateConfirmation = 0;
-    }
-
-    /// <summary>
-    /// Attempts to get typed container info (dialogTitleLangCode, quantityColumns) via reflection.
-    /// Works for vanilla BlockEntityGenericTypedContainer, SortableStorage, ContainersBundle, etc.
-    /// </summary>
-    private static bool TryGetTypedContainerInfo(BlockEntity be, out string titleLangCode, out int columns)
-    {
-        titleLangCode = null;
-        columns = 4;
-
-        var type = be.GetType();
-
-        // Check cache first
-        if (!_typedContainerCache.TryGetValue(type, out var cached))
-        {
-            // Look for dialogTitleLangCode and quantityColumns fields
-            var titleField = type.GetField("dialogTitleLangCode", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            var columnsField = type.GetField("quantityColumns", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-            cached = (titleField != null && columnsField != null)
-                ? (titleField, columnsField)
-                : null;
-            _typedContainerCache[type] = cached;
-        }
-
-        if (cached == null) return false;
-
-        titleLangCode = cached.Value.title.GetValue(be) as string;
-        if (string.IsNullOrEmpty(titleLangCode)) return false;
-
-        var columnsValue = cached.Value.columns.GetValue(be);
-        if (columnsValue is int c)
-            columns = c;
-
-        return true;
     }
 
     private bool HasLineOfSightTo(IPlayer player, Vec3d targetPoint)
@@ -371,14 +416,8 @@ public class PackratModSystem : ModSystem
             var be = accessor.GetBlockEntity(blockPos);
             if (be is not BlockEntityContainer container) return;
 
-            // Filter to storage containers using type checks:
-            // - BlockEntityCrate: vanilla crates
-            // - BlockEntityOpenableContainer: vanilla chests, ContainersBundle
-            // - TryGetTypedContainerInfo: SortableStorage and other typed container mods
-            bool isStorageContainer = be is BlockEntityCrate
-                || be is BlockEntityOpenableContainer
-                || TryGetTypedContainerInfo(be, out string _, out int _);
-            if (!isStorageContainer) return;
+            // Filter to storage containers using type registry
+            if (!IsStorageContainer(be)) return;
 
             containersFound++;
 
@@ -407,7 +446,7 @@ public class PackratModSystem : ModSystem
         scanTimer.Stop();
         if (_debugLogging)
         {
-            _api.Logger.Debug($"[PackRat Debug] Scan: {scanTimer.ElapsedMilliseconds}ms total, " +
+            _api.Logger.Debug($"[PackRat] Scan: {scanTimer.ElapsedMilliseconds}ms total, " +
                               $"{blocksWalked} blocks walked, {containersFound} containers found, " +
                               $"{losChecks} LOS checks ({losTimeMs}ms), {chests.Count} accessible, " +
                               $"strictCheck={strictCheck}");
@@ -434,16 +473,16 @@ public class PackratModSystem : ModSystem
             // Debug logging: show all candidates expected to send inventory
             if (_debugLogging)
             {
-                _api.Logger.Debug($"[PackRat Debug] Found {chests.Count} containers total:");
-                _api.Logger.Debug($"[PackRat Debug]   Crates (direct access): {crateCount}");
-                _api.Logger.Debug($"[PackRat Debug]   Chests (expecting inventory packets): {_pendingPositions.Count}");
-                _api.Logger.Debug($"[PackRat Debug] Candidates expecting inventory packets:");
+                _api.Logger.Debug($"[PackRat] Found {chests.Count} containers total:");
+                _api.Logger.Debug($"[PackRat]   Crates (direct access): {crateCount}");
+                _api.Logger.Debug($"[PackRat]   Chests (expecting inventory packets): {_pendingPositions.Count}");
+                _api.Logger.Debug($"[PackRat] Candidates expecting inventory packets:");
                 foreach (var chest in chests)
                 {
                     bool isCrate = IsCrate(chest);
                     var invId = chest.Inventory?.InventoryID ?? "null";
                     var blockName = chest.Block?.Code?.ToString() ?? "unknown";
-                    _api.Logger.Debug($"[PackRat Debug]   {chest.Pos} - {blockName} (inv: {invId}) - {(isCrate ? "CRATE" : "CHEST/packet pending")}");
+                    _api.Logger.Debug($"[PackRat]   {chest.Pos} - {blockName} (inv: {invId}) - {(isCrate ? "CRATE" : "CHEST/packet pending")}");
                 }
             }
 
@@ -510,7 +549,7 @@ public class PackratModSystem : ModSystem
         // Safety check - don't open empty browser
         if (composite.Count == 0)
         {
-            _api?.Logger.Warning("PackRat: No slots found in containers, not opening browser");
+            _api?.Logger.Warning("[PackRat] No slots found in containers, not opening browser");
             ResetBrowseMode();
             return;
         }
@@ -522,23 +561,10 @@ public class PackratModSystem : ModSystem
     }
 
     /// <summary>
-    /// Harmony patch to intercept server packets and suppress individual container dialogs
-    /// when in browse mode. This handles vanilla BlockEntityOpenableContainer and mods that extend it
-    /// (like ContainersBundle).
+    /// Harmony prefix to intercept server packets and suppress individual container dialogs
+    /// when in browse mode. Applied dynamically to container types that need it.
     /// </summary>
-    [HarmonyPrefix]
-    [HarmonyPatch(typeof(BlockEntityOpenableContainer),
-        nameof(BlockEntityOpenableContainer.OnReceivedServerPacket))]
-    public static bool OnReceivedServerPacket(int packetid, byte[] data, BlockEntityOpenableContainer __instance)
-    {
-        return HandleServerPacket(packetid, data, __instance.Inventory, __instance.Pos);
-    }
-
-    /// <summary>
-    /// Generic Harmony patch for mods that don't extend BlockEntityOpenableContainer
-    /// (like SortableStorage). Applied dynamically at runtime if the mod is loaded.
-    /// </summary>
-    public static bool OnReceivedServerPacket_Generic(int packetid, byte[] data, BlockEntityContainer __instance)
+    public static bool OnReceivedServerPacket_Prefix(int packetid, byte[] data, BlockEntityContainer __instance)
     {
         return HandleServerPacket(packetid, data, __instance.Inventory, __instance.Pos);
     }
@@ -549,10 +575,11 @@ public class PackratModSystem : ModSystem
     private static bool HandleServerPacket(int packetid, byte[] data, InventoryBase inventory, BlockPos pos)
     {
         // Only suppress OpenInventory packets when in browse mode
+        // EnumBlockContainerPacketId.OpenInventory = 5000, used by vanilla, SortableStorage, and ContainersBundle
         if (!_browseMode || packetid != (int)EnumBlockContainerPacketId.OpenInventory)
             return true;
 
-        // Process the inventory data
+        // Process the inventory data (format is compatible between vanilla and SortableStorage)
         var blockContainer = BlockEntityContainerOpen.FromBytes(data);
         inventory.FromTreeAttributes(blockContainer.Tree);
         inventory.ResolveBlocksOrItems();
