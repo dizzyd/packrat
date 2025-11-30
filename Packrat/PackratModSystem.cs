@@ -242,20 +242,22 @@ public class PackratModSystem : ModSystem
         var room = _roomSystem.GetRoomForPosition(player.Entity.Pos.AsBlockPos);
         if (room is { ExitCount: 0 })
         {
-            _api.Logger.Debug("Using room for search");
             startPos = room.Location.Start.AsBlockPos;
             endPos = room.Location.End.AsBlockPos;
             strictCheck = false;
         }
         else
         {
-            _api.Logger.Debug("Using ranged scan for search");
 
             // Not in an enclosed room; use a ranged scan
             var range = player.WorldData.PickingRange + 1;
             startPos = (eyePos - range).AsBlockPos;
             endPos = (eyePos + range + 1.0f).AsBlockPos;
         }
+
+        // Only scan from player's feet level and up (allow one block below for chests player stands on)
+        var playerFeetY = player.Entity.Pos.AsBlockPos.Y - 1;
+        startPos.Y = Math.Max(startPos.Y, playerFeetY);
 
         // Now that we have our area to scan, do the scan - taking into account anything that
         // might be blocking the player's ability to interact with the storage
