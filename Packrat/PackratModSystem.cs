@@ -50,6 +50,9 @@ public class PackratModSystem : ModSystem
     private static GuiDialogStorageBrowser _browserDialog;
     private static int _pendingCrateConfirmation; // Number of crates waiting for server confirmation
 
+    // Debug logging (toggle with .packratdebug command)
+    private static bool _debugLogging;
+
     // Reflection cache for typed container info
     private static readonly Dictionary<Type, (FieldInfo title, FieldInfo columns)?> _typedContainerCache = new();
 
@@ -125,6 +128,15 @@ public class PackratModSystem : ModSystem
         api.Network
             .GetChannel(Mod.Info.ModID)
             .SetMessageHandler<OpenManyConfirmMessage>(HandleOpenManyConfirm);
+
+        // Register debug toggle command
+        api.ChatCommands.Create("packratdebug")
+            .WithDescription("Toggle PackRat debug logging")
+            .HandleWith(_ =>
+            {
+                _debugLogging = !_debugLogging;
+                return TextCommandResult.Success($"PackRat debug logging: {(_debugLogging ? "ON" : "OFF")}");
+            });
     }
 
 
@@ -393,10 +405,13 @@ public class PackratModSystem : ModSystem
         });
 
         scanTimer.Stop();
-        _api.Logger.Debug($"PackRat scan: {scanTimer.ElapsedMilliseconds}ms total, " +
-                          $"{blocksWalked} blocks walked, {containersFound} containers found, " +
-                          $"{losChecks} LOS checks ({losTimeMs}ms), {chests.Count} accessible, " +
-                          $"strictCheck={strictCheck}");
+        if (_debugLogging)
+        {
+            _api.Logger.Debug($"[PackRat Debug] Scan: {scanTimer.ElapsedMilliseconds}ms total, " +
+                              $"{blocksWalked} blocks walked, {containersFound} containers found, " +
+                              $"{losChecks} LOS checks ({losTimeMs}ms), {chests.Count} accessible, " +
+                              $"strictCheck={strictCheck}");
+        }
 
         if (chests.Count > 0)
         {
@@ -414,6 +429,22 @@ public class PackratModSystem : ModSystem
                     crateCount++;
                 else
                     _pendingPositions.Add(chest.Pos.Copy());
+            }
+
+            // Debug logging: show all candidates expected to send inventory
+            if (_debugLogging)
+            {
+                _api.Logger.Debug($"[PackRat Debug] Found {chests.Count} containers total:");
+                _api.Logger.Debug($"[PackRat Debug]   Crates (direct access): {crateCount}");
+                _api.Logger.Debug($"[PackRat Debug]   Chests (expecting inventory packets): {_pendingPositions.Count}");
+                _api.Logger.Debug($"[PackRat Debug] Candidates expecting inventory packets:");
+                foreach (var chest in chests)
+                {
+                    bool isCrate = IsCrate(chest);
+                    var invId = chest.Inventory?.InventoryID ?? "null";
+                    var blockName = chest.Block?.Code?.ToString() ?? "unknown";
+                    _api.Logger.Debug($"[PackRat Debug]   {chest.Pos} - {blockName} (inv: {invId}) - {(isCrate ? "CRATE" : "CHEST/packet pending")}");
+                }
             }
 
             // Store all containers for the browser
