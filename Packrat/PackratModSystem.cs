@@ -50,6 +50,9 @@ public class PackratModSystem : ModSystem
     private static GuiDialogStorageBrowser _browserDialog;
     private static int _pendingCrateConfirmation; // Number of crates waiting for server confirmation
 
+    // Client config (persisted)
+    private static PackratConfig _config;
+
     // Debug logging (toggle with .packratdebug command)
     private static bool _debugLogging;
 
@@ -179,6 +182,9 @@ public class PackratModSystem : ModSystem
         base.StartClientSide(api);
         _clientApi = api;
 
+        // Load client config
+        _config = api.LoadModConfig<PackratConfig>($"{ModId}-client.json") ?? new PackratConfig();
+
         _roomSystem = api.ModLoader.GetModSystem<RoomRegistry>();
         _reinforcementSystem = api.ModLoader.GetModSystem<ModSystemBlockReinforcement>();
 
@@ -203,6 +209,15 @@ public class PackratModSystem : ModSystem
                 _debugLogging = !_debugLogging;
                 return TextCommandResult.Success($"PackRat debug logging: {(_debugLogging ? "ON" : "OFF")}");
             });
+    }
+
+    /// <summary>
+    /// Save client config when sort mode changes
+    /// </summary>
+    private static void OnSortModeChanged(SortMode newMode)
+    {
+        _config.SortMode = newMode;
+        _clientApi?.StoreModConfig(_config, $"{ModId}-client.json");
     }
 
 
@@ -554,8 +569,12 @@ public class PackratModSystem : ModSystem
             return;
         }
 
+        // Create sorted view with persisted sort mode
+        var sortedView = new SortedInventoryView(composite);
+        sortedView.SortMode = _config?.SortMode ?? SortMode.None;
+
         // Create and show the browser dialog
-        _browserDialog = new GuiDialogStorageBrowser(_clientApi, composite, _openedContainers);
+        _browserDialog = new GuiDialogStorageBrowser(_clientApi, sortedView, _openedContainers, OnSortModeChanged);
         _browserDialog.TryOpen();
         ResetBrowseMode();
     }

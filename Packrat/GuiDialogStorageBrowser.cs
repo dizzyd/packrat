@@ -18,9 +18,10 @@ public class GuiDialogStorageBrowser : GuiDialog
     public override double DrawOrder => 0.2;
     public override bool PrefersUngrabbedMouse => false;
 
-    private readonly CompositeInventoryView _compositeInventory;
+    private readonly SortedInventoryView _sortedInventory;
     private readonly List<BlockEntityContainer> _containers;
     private readonly ICoreClientAPI _capi;
+    private readonly Action<SortMode> _onSortModeChanged;
 
     private const int Cols = 10;
     private const int MaxVisibleRows = 8;
@@ -40,6 +41,9 @@ public class GuiDialogStorageBrowser : GuiDialog
     // Flag to suppress key press after focusing search
     private bool _suppressNextKeyPress;
 
+    // Track slot count for dynamic recomposition
+    private int _lastSlotCount;
+
     // Colors for container outlines (cycle through these) - RGB values
     private static readonly double[][] ContainerColors = new double[][]
     {
@@ -53,15 +57,20 @@ public class GuiDialogStorageBrowser : GuiDialog
         new[] { 1.0, 0.5, 0.3 },   // Coral
     };
 
+    // Sort mode dropdown options
+    private static readonly string[] SortModeNames = { "None", "A-Z", "Category", "Material" };
+
     public GuiDialogStorageBrowser(
         ICoreClientAPI capi,
-        CompositeInventoryView compositeInventory,
-        List<BlockEntityContainer> containers)
+        SortedInventoryView sortedInventory,
+        List<BlockEntityContainer> containers,
+        Action<SortMode> onSortModeChanged = null)
         : base(capi)
     {
         _capi = capi;
-        _compositeInventory = compositeInventory;
+        _sortedInventory = sortedInventory;
         _containers = containers;
+        _onSortModeChanged = onSortModeChanged;
 
         // Create a 1x1 semi-transparent black texture for dimming
         int dimColor = (220 << 24) | (0 << 16) | (0 << 8) | 0; // ARGB: 86% opacity black
@@ -73,7 +82,7 @@ public class GuiDialogStorageBrowser : GuiDialog
         if (_capi.Gui.GetDialogPosition(DialogName) == null)
         {
             // Calculate approximate dialog size for centering
-            int totalSlots = _compositeInventory.Count;
+            int totalSlots = _sortedInventory.Count;
             int totalRows = Math.Max(1, (int)Math.Ceiling(totalSlots / (float)Cols));
             int visibleRows = Math.Max(1, Math.Min(totalRows, MaxVisibleRows));
             bool needsScrollbar = totalRows > visibleRows;
@@ -101,7 +110,7 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     private void ComposeDialog()
     {
-        int totalSlots = _compositeInventory.Count;
+        int totalSlots = _sortedInventory.Count;
         int totalRows = Math.Max(1, (int)Math.Ceiling(totalSlots / (float)Cols));
         int visibleRows = Math.Max(1, Math.Min(totalRows, MaxVisibleRows));
         bool needsScrollbar = totalRows > visibleRows;
@@ -110,10 +119,11 @@ public class GuiDialogStorageBrowser : GuiDialog
         double slotSize = GuiElementPassiveItemSlot.unscaledSlotSize;
         double elemToDlgPad = GuiStyle.ElementToDialogPadding;
 
-        // Search box dimensions
-        double searchBoxHeight = 30;
+        // Search box and sort dropdown dimensions
+        double controlRowHeight = 30;
         double gridWidth = (slotSize + pad) * Cols;
-        double searchBoxWidth = gridWidth + 12; // Match inset width (grid + 6px border each side)
+        double dropdownWidth = 90;
+        double searchBoxWidth = gridWidth + 12 - dropdownWidth - 8; // Leave room for dropdown
 
         // Background bounds - child elements will be positioned relative to this
         ElementBounds bgBounds = ElementBounds.Fill.WithFixedPadding(elemToDlgPad);
@@ -123,10 +133,13 @@ public class GuiDialogStorageBrowser : GuiDialog
         double titleBarHeight = 25;
 
         // Search box bounds - below title bar
-        ElementBounds searchBounds = ElementBounds.Fixed(0, titleBarHeight, searchBoxWidth, searchBoxHeight);
+        ElementBounds searchBounds = ElementBounds.Fixed(0, titleBarHeight, searchBoxWidth, controlRowHeight);
+
+        // Sort dropdown bounds - to the right of search box
+        ElementBounds sortDropdownBounds = ElementBounds.Fixed(searchBoxWidth + 8, titleBarHeight, dropdownWidth, controlRowHeight);
 
         // Slot grid bounds - positioned below search box
-        ElementBounds slotGridBounds = ElementStdBounds.SlotGrid(EnumDialogArea.None, pad, titleBarHeight + searchBoxHeight + 8 + pad, Cols, visibleRows);
+        ElementBounds slotGridBounds = ElementStdBounds.SlotGrid(EnumDialogArea.None, pad, titleBarHeight + controlRowHeight + 8 + pad, Cols, visibleRows);
 
         // Full grid bounds - for scrolling (total height)
         ElementBounds fullGridBounds = ElementStdBounds.SlotGrid(EnumDialogArea.None, 0, 0, Cols, totalRows);
@@ -148,6 +161,7 @@ public class GuiDialogStorageBrowser : GuiDialog
             .AddDialogTitleBar(title, OnTitleBarClose)
             .BeginChildElements(bgBounds)
                 .AddTextInput(searchBounds, OnSearchTextChanged, CairoFont.WhiteSmallText(), "searchbox")
+                .AddDropDown(SortModeNames, SortModeNames, (int)_sortedInventory.SortMode, OnSortModeSelected, sortDropdownBounds, "sortdropdown")
                 .AddInset(insetBounds);
 
         if (needsScrollbar)
@@ -160,7 +174,7 @@ public class GuiDialogStorageBrowser : GuiDialog
             composer
                 .AddVerticalScrollbar(OnScrollbarNewValue, scrollbarBounds, "scrollbar")
                 .BeginClip(clippingBounds)
-                    .AddItemSlotGrid(_compositeInventory, DoSendPacket, Cols, fullGridBounds, "slotgrid")
+                    .AddItemSlotGrid(_sortedInventory, DoSendPacket, Cols, fullGridBounds, "slotgrid")
                     .AddDynamicCustomDraw(outlineBounds, DrawContainerOutlines, "outlines")
                 .EndClip();
         }
@@ -169,7 +183,7 @@ public class GuiDialogStorageBrowser : GuiDialog
             ElementBounds outlineBounds = slotGridBounds.CopyOffsetedSibling();
 
             composer
-                .AddItemSlotGrid(_compositeInventory, DoSendPacket, Cols, slotGridBounds, "slotgrid")
+                .AddItemSlotGrid(_sortedInventory, DoSendPacket, Cols, slotGridBounds, "slotgrid")
                 .AddDynamicCustomDraw(outlineBounds, DrawContainerOutlines, "outlines");
         }
 
@@ -185,10 +199,31 @@ public class GuiDialogStorageBrowser : GuiDialog
 
         SingleComposer.GetTextInput("searchbox").SetPlaceHolderText(searchPlaceholder);
         SingleComposer.UnfocusOwnElements();
+
+        // Track slot count for dynamic recomposition
+        _lastSlotCount = totalSlots;
+    }
+
+    private void OnSortModeSelected(string code, bool selected)
+    {
+        int index = Array.IndexOf(SortModeNames, code);
+        if (index < 0) return;
+
+        var newMode = (SortMode)index;
+        if (newMode == _sortedInventory.SortMode) return;
+
+        _sortedInventory.SortMode = newMode;
+        _onSortModeChanged?.Invoke(newMode);
+
+        // Recompose the dialog since slot count may have changed
+        ComposeDialog();
     }
 
     private void DrawContainerOutlines(Context ctx, ImageSurface surface, ElementBounds currentBounds)
     {
+        // Skip container outlines when sorting is active
+        if (_sortedInventory.IsSorting) return;
+
         double pad = GuiElementItemSlotGrid.unscaledSlotPadding;
         double slotSize = GuiElementPassiveItemSlot.unscaledSlotSize;
         double cellSize = slotSize + pad;
@@ -198,7 +233,7 @@ public class GuiDialogStorageBrowser : GuiDialog
         cellSize *= scale;
 
         int colorIndex = 0;
-        foreach (var (startIndex, count) in _compositeInventory.ContainerBoundaries)
+        foreach (var (startIndex, count) in _sortedInventory.Underlying.ContainerBoundaries)
         {
             var color = ContainerColors[colorIndex % ContainerColors.Length];
 
@@ -308,13 +343,16 @@ public class GuiDialogStorageBrowser : GuiDialog
     {
         if (string.IsNullOrEmpty(_searchFilter)) return true;
 
-        var slot = _compositeInventory[slotIndex];
+        var slot = _sortedInventory[slotIndex];
         if (slot?.Itemstack == null)
         {
-            // For empty crate slots, check the template item
-            if (_compositeInventory.IsSlotInCrate(slotIndex))
+            // When sorting is active, empty slots are filtered out, so no need to check crates
+            if (_sortedInventory.IsSorting) return false;
+
+            // For empty crate slots (only when not sorting), check the template item
+            if (_sortedInventory.Underlying.IsSlotInCrate(slotIndex))
             {
-                var templateItem = _compositeInventory.GetCrateTemplateItem(slotIndex);
+                var templateItem = _sortedInventory.Underlying.GetCrateTemplateItem(slotIndex);
                 if (templateItem != null)
                 {
                     return ItemMatchesFilter(templateItem.Collectible, templateItem.GetName());
@@ -420,7 +458,14 @@ public class GuiDialogStorageBrowser : GuiDialog
     {
         base.OnRenderGUI(deltaTime);
 
-        // Render ghost items for empty crate slots
+        // Check if slot count changed and recompose if needed
+        int currentCount = _sortedInventory.Count;
+        if (currentCount != _lastSlotCount)
+        {
+            ComposeDialog();
+            return; // Skip rest of rendering this frame, will render properly next frame
+        }
+
         var slotGrid = SingleComposer?.GetSlotGrid("slotgrid");
         if (slotGrid == null) return;
 
@@ -439,42 +484,46 @@ public class GuiDialogStorageBrowser : GuiDialog
         double visibleTop = _insetBounds?.absY ?? double.MinValue;
         double visibleBottom = _insetBounds != null ? _insetBounds.absY + _insetBounds.OuterHeight : double.MaxValue;
 
-        // Light ghost effect - ~15% opacity white
-        int ghostColor = (40 << 24) | (255 << 16) | (255 << 8) | 255;
-
-        for (int i = 0; i < _compositeInventory.Count; i++)
+        // Render ghost items for empty crate slots (only when NOT sorting)
+        if (!_sortedInventory.IsSorting)
         {
-            var slot = _compositeInventory[i];
+            // Light ghost effect - ~15% opacity white
+            int ghostColor = (40 << 24) | (255 << 16) | (255 << 8) | 255;
 
-            // Only render ghost for empty crate slots
-            if (slot?.Itemstack != null) continue;
-            if (!_compositeInventory.IsSlotInCrate(i)) continue;
+            for (int i = 0; i < _sortedInventory.Count; i++)
+            {
+                var slot = _sortedInventory[i];
 
-            var templateItem = _compositeInventory.GetCrateTemplateItem(i);
-            if (templateItem == null) continue;
+                // Only render ghost for empty crate slots
+                if (slot?.Itemstack != null) continue;
+                if (!_sortedInventory.Underlying.IsSlotInCrate(i)) continue;
 
-            // Calculate slot position (gridY already has scroll applied)
-            int row = i / Cols;
-            int col = i % Cols;
-            double slotX = gridX + col * cellSize + pad * scale / 2;
-            double slotY = gridY + row * cellSize + pad * scale / 2;
+                var templateItem = _sortedInventory.Underlying.GetCrateTemplateItem(i);
+                if (templateItem == null) continue;
 
-            // Skip if outside visible clip area
-            if (slotY + slotSize < visibleTop || slotY > visibleBottom) continue;
+                // Calculate slot position (gridY already has scroll applied)
+                int row = i / Cols;
+                int col = i % Cols;
+                double slotX = gridX + col * cellSize + pad * scale / 2;
+                double slotY = gridY + row * cellSize + pad * scale / 2;
 
-            // Render the ghost item using the standard item size
-            double itemSize = GuiElementPassiveItemSlot.unscaledItemSize * scale;
-            _capi.Render.RenderItemstackToGui(
-                new DummySlot(templateItem),
-                slotX + slotSize / 2,
-                slotY + slotSize / 2,
-                100, // z-depth
-                (float)itemSize,
-                ghostColor,
-                shading: true,
-                rotate: false,
-                showStackSize: false
-            );
+                // Skip if outside visible clip area
+                if (slotY + slotSize < visibleTop || slotY > visibleBottom) continue;
+
+                // Render the ghost item using the standard item size
+                double itemSize = GuiElementPassiveItemSlot.unscaledItemSize * scale;
+                _capi.Render.RenderItemstackToGui(
+                    new DummySlot(templateItem),
+                    slotX + slotSize / 2,
+                    slotY + slotSize / 2,
+                    100, // z-depth
+                    (float)itemSize,
+                    ghostColor,
+                    shading: true,
+                    rotate: false,
+                    showStackSize: false
+                );
+            }
         }
 
         // Render dimming overlay on non-matching slots when search is active
@@ -486,7 +535,7 @@ public class GuiDialogStorageBrowser : GuiDialog
                 _capi.Render.PushScissor(_insetBounds, true);
             }
 
-            for (int i = 0; i < _compositeInventory.Count; i++)
+            for (int i = 0; i < _sortedInventory.Count; i++)
             {
                 if (SlotMatchesFilter(i)) continue;
 

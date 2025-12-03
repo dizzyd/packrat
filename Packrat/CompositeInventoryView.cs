@@ -35,6 +35,11 @@ public class CompositeInventoryView : InventoryBase
     public IReadOnlyList<(int startIndex, int count)> ContainerBoundaries => _containerBoundaries;
 
     /// <summary>
+    /// Get the source inventories for subscribing to slot change events
+    /// </summary>
+    public IReadOnlyList<InventoryBase> SourceInventories => _sourceInventories;
+
+    /// <summary>
     /// Add an inventory's slots to this composite view
     /// </summary>
     /// <param name="inv">The inventory to add</param>
