@@ -19,6 +19,9 @@ public class SortedInventoryView : InventoryBase
     // Maps display position -> underlying slot index (only used when sorting)
     private int[] _displayOrder;
 
+    // Dummy slot to return for out-of-bounds access (VS GUI expects non-null slots)
+    private readonly DummySlot _emptySlot = new(null);
+
     // Track if display order needs rebuilding
     private bool _isDirty;
 
@@ -250,7 +253,7 @@ public class SortedInventoryView : InventoryBase
             }
 
             if (_displayOrder == null || slotId < 0 || slotId >= _displayOrder.Length)
-                return null;
+                return _emptySlot; // Return empty slot instead of null (VS GUI expects non-null)
 
             return _underlying[_displayOrder[slotId]];
         }

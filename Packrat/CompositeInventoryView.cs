@@ -24,6 +24,9 @@ public class CompositeInventoryView : InventoryBase
     // Track which inventories are crates (have special item type restrictions)
     private readonly HashSet<InventoryBase> _crateInventories = new();
 
+    // Dummy slot to return for out-of-bounds access (VS GUI expects non-null slots)
+    private readonly DummySlot _emptySlot = new(null);
+
     public CompositeInventoryView(ICoreAPI api)
         : base("composite", "packrat-browser", api)
     {
@@ -122,7 +125,8 @@ public class CompositeInventoryView : InventoryBase
     {
         get
         {
-            if (slotId < 0 || slotId >= _slotMap.Count) return null;
+            if (slotId < 0 || slotId >= _slotMap.Count)
+                return _emptySlot; // Return empty slot instead of null (VS GUI expects non-null)
             var (inv, realSlot) = _slotMap[slotId];
             return inv[realSlot];
         }
