@@ -70,6 +70,8 @@ public class PackratModSystem : ModSystem
         ("SortableStorage.ModSystem.BESortableOpenableContainer", true),
         // ContainersBundle - extends BlockEntityOpenableContainer, inherits patched method
         ("ContainersBundle.BlockEntityCBContainer", false),
+        // BetterCrates - extends BlockEntityContainer, uses direct inventory access like vanilla crates
+        ("BetterCratesNamespace.BetterCrateBlockEntity", false),
     };
 
     public static string ModId => "packrat";
@@ -271,8 +273,11 @@ public class PackratModSystem : ModSystem
     /// <summary>
     /// Check if a container is a crate (by inventory ID prefix)
     /// </summary>
-    private static bool IsCrate(BlockEntityContainer container) =>
-        container.Inventory?.InventoryID?.StartsWith("crate-") == true;
+    private static bool IsCrate(BlockEntityContainer container)
+    {
+        var invId = container.Inventory?.InventoryID;
+        return invId?.StartsWith("crate-") == true || invId?.StartsWith("bettercrate-") == true;
+    }
 
     /// <summary>
     /// Try to invoke OnPlayerRightClick on a block entity via reflection.
@@ -629,12 +634,12 @@ public class PackratModSystem : ModSystem
     {
         // Check if source is from a container (chest or crate)
         var sourceInvId = sourceSlot?.Inventory?.InventoryID;
-        if (sourceInvId != null && (sourceInvId.StartsWith("chest-") || sourceInvId.StartsWith("crate-")))
+        if (sourceInvId != null && (sourceInvId.StartsWith("chest-") || sourceInvId.StartsWith("crate-") || sourceInvId.StartsWith("bettercrate-")))
         {
             // Source is from a container - block all other containers as destinations
             // This forces items to go to player inventory
             if (__instance.InventoryID != null &&
-                (__instance.InventoryID.StartsWith("chest-") || __instance.InventoryID.StartsWith("crate-")))
+                (__instance.InventoryID.StartsWith("chest-") || __instance.InventoryID.StartsWith("crate-") || __instance.InventoryID.StartsWith("bettercrate-")))
             {
                 __result = new WeightedSlot();
                 return false;
@@ -657,7 +662,8 @@ public class PackratModSystem : ModSystem
         InventoryBase __instance, ref WeightedSlot __result)
     {
         // Only process crate inventories
-        if (__instance.InventoryID == null || !__instance.InventoryID.StartsWith("crate-"))
+        if (__instance.InventoryID == null ||
+            (!__instance.InventoryID.StartsWith("crate-") && !__instance.InventoryID.StartsWith("bettercrate-")))
             return;
 
         // If no valid slot was found, nothing to do
