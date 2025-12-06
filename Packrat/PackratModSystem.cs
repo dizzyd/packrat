@@ -681,21 +681,33 @@ public class PackratModSystem : ModSystem
             }
         }
 
+        var side = __instance.Api?.Side.ToString() ?? "unknown";
+        var srcItem = sourceSlot?.Itemstack?.GetName() ?? "null";
+        var existingItem = existingSlot?.Itemstack?.GetName() ?? "null";
+        var originalWeight = __result.weight;
+
         if (existingSlot != null && sourceSlot?.Itemstack != null)
         {
             // Crate has items - check if source matches
             if (!sourceSlot.Itemstack.Equals(__instance.Api.World, existingSlot.Itemstack, GlobalConstants.IgnoredStackAttributes))
             {
                 // Item type doesn't match - block this crate entirely
+                if (_debugLogging)
+                    _api?.Logger.Debug($"[PackRat] [{side}] GetBestSuitedSlot: {__instance.InventoryID} - BLOCKED (mismatch: {srcItem} vs {existingItem})");
                 __result = new WeightedSlot();
                 return;
             }
-            // Item matches - keep original weight (crate with matching items is highest priority)
+            // Item matches - boost weight to beat empty chests (~3) and chests with matching items (~5)
+            __result.weight = 6f;
+            if (_debugLogging)
+                _api?.Logger.Debug($"[PackRat] [{side}] GetBestSuitedSlot: {__instance.InventoryID} - MATCH ({srcItem} matches {existingItem}), weight {originalWeight} -> {__result.weight}");
         }
         else
         {
             // Crate is empty - boost priority above chests (which typically return 1-4)
             __result.weight = 5f;
+            if (_debugLogging)
+                _api?.Logger.Debug($"[PackRat] [{side}] GetBestSuitedSlot: {__instance.InventoryID} - EMPTY crate, weight {originalWeight} -> {__result.weight}");
         }
     }
 }
