@@ -710,4 +710,56 @@ public class PackratModSystem : ModSystem
                 _api?.Logger.Debug($"[PackRat] [{side}] GetBestSuitedSlot: {__instance.InventoryID} - EMPTY crate, weight {originalWeight} -> {__result.weight}");
         }
     }
+
+    /// <summary>
+    /// Harmony postfix to prefer containers with lower perish rates for perishable items.
+    /// Cellars, ice boxes, storage vessels, etc. will be preferred over normal storage.
+    /// Applies to ALL inventories - any container that reduces perish rate will be prioritized.
+    /// </summary>
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(InventoryBase), nameof(InventoryBase.GetBestSuitedSlot),
+        new Type[] {typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>)})]
+    public static void GetBestSuitedSlot_PerishRateHandling(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots,
+        InventoryBase __instance, ref WeightedSlot __result)
+    {
+        // If no valid slot was found, nothing to do
+        if (__result.slot == null)
+            return;
+
+        // Check if source item is perishable
+        var stack = sourceSlot?.Itemstack;
+        if (stack == null) return;
+
+        var transProps = stack.Collectible?.TransitionableProps;
+        if (transProps == null) return;
+
+        bool isPerishable = false;
+        foreach (var prop in transProps)
+        {
+            if (prop.Type == EnumTransitionType.Perish)
+            {
+                isPerishable = true;
+                break;
+            }
+        }
+
+        if (!isPerishable) return;
+
+        // Get the perish rate for this inventory
+        float perishRate = __instance.GetTransitionSpeedMul(EnumTransitionType.Perish, stack);
+
+        // Adjust weight: lower perish rate = higher weight
+        // perishRate 0 -> +10 bonus (ice box / zero perish)
+        // perishRate 0.5 -> +5 bonus (cellar)
+        // perishRate 1.0 -> +0 bonus (normal storage)
+        // perishRate > 1 -> no bonus (bad storage)
+        float bonus = Math.Max(0f, (1f - perishRate) * 10f);
+        __result.weight += bonus;
+
+        if (_debugLogging)
+        {
+            var side = __instance.Api?.Side.ToString() ?? "unknown";
+            _api?.Logger.Debug($"[PackRat] [{side}] GetBestSuitedSlot: {__instance.InventoryID} - PERISH item, rate={perishRate:F2}, bonus={bonus:F1}, newWeight={__result.weight:F1}");
+        }
+    }
 }
