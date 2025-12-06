@@ -72,7 +72,12 @@ public class PackratModSystem : ModSystem
         ("ContainersBundle.BlockEntityCBContainer", false),
         // BetterCrates - extends BlockEntityContainer, uses direct inventory access like vanilla crates
         ("BetterCratesNamespace.BetterCrateBlockEntity", false),
+        // StorageController - extends BlockEntityGenericTypedContainer, links to other containers
+        ("storagecontroller.BlockEntityStorageController", false),
     };
+
+    // Cache for Storage Controller's ContainerList property (accessed via reflection)
+    private static PropertyInfo _storageControllerContainerListProp;
 
     public static string ModId => "packrat";
 
@@ -280,6 +285,107 @@ public class PackratModSystem : ModSystem
     }
 
     /// <summary>
+    /// Expand Storage Controllers by adding their linked containers to the list.
+    /// Storage Controller mod maintains a list of linked container positions.
+    /// Note: Storage Controllers themselves are REMOVED from the list after expansion,
+    /// because they have custom OnPlayerRightClick that doesn't send inventory packets.
+    /// </summary>
+    private void ExpandStorageControllers(List<BlockEntityContainer> containers, IBlockAccessor accessor, IPlayer player)
+    {
+        // Collect positions from all storage controllers first to avoid modifying list while iterating
+        var linkedPositions = new HashSet<BlockPos>();
+        var storageControllers = new List<BlockEntityContainer>();
+        var existingPositions = new HashSet<BlockPos>();
+
+        foreach (var container in containers)
+        {
+            existingPositions.Add(container.Pos);
+
+            var containerList = GetStorageControllerLinkedContainers(container);
+            if (containerList != null)
+            {
+                // This is a Storage Controller - mark it for removal and collect its linked containers
+                storageControllers.Add(container);
+
+                foreach (var pos in containerList)
+                {
+                    if (pos != null && !existingPositions.Contains(pos))
+                    {
+                        linkedPositions.Add(pos);
+                    }
+                }
+            }
+        }
+
+        // Remove Storage Controllers from the list - they don't work with Packrat's packet flow
+        // (their OnPlayerRightClick only opens a dialog client-side, doesn't send inventory packets)
+        foreach (var sc in storageControllers)
+        {
+            containers.Remove(sc);
+            if (_debugLogging)
+            {
+                _api.Logger.Debug($"[PackRat] Removed Storage Controller at {sc.Pos} (incompatible packet flow)");
+            }
+        }
+
+        if (linkedPositions.Count == 0) return;
+
+        // Add linked containers that are valid and accessible
+        int added = 0;
+        foreach (var pos in linkedPositions)
+        {
+            // Skip if we already have this container
+            if (existingPositions.Contains(pos)) continue;
+
+            var be = accessor.GetBlockEntity(pos);
+            if (be is BlockEntityContainer linkedContainer && IsStorageContainer(be))
+            {
+                // Skip if this is also a Storage Controller (nested controllers)
+                if (GetStorageControllerLinkedContainers(linkedContainer) != null)
+                    continue;
+
+                // Check reinforcement
+                if (!_reinforcementSystem.IsLockedForInteract(pos, player))
+                {
+                    containers.Add(linkedContainer);
+                    existingPositions.Add(pos);
+                    added++;
+                }
+            }
+        }
+
+        if (_debugLogging && added > 0)
+        {
+            _api.Logger.Debug($"[PackRat] Expanded {added} containers from Storage Controllers");
+        }
+    }
+
+    /// <summary>
+    /// Get linked containers from a Storage Controller via reflection.
+    /// Returns null if the container is not a Storage Controller.
+    /// </summary>
+    private static List<BlockPos> GetStorageControllerLinkedContainers(BlockEntityContainer container)
+    {
+        var type = container.GetType();
+
+        // Check if this is a Storage Controller (by type name to avoid hard dependency)
+        if (type.FullName == null || !type.FullName.Contains("StorageController"))
+            return null;
+
+        // Cache the property accessor
+        if (_storageControllerContainerListProp == null)
+        {
+            _storageControllerContainerListProp = type.GetProperty("ContainerList",
+                BindingFlags.Public | BindingFlags.Instance);
+        }
+
+        if (_storageControllerContainerListProp == null)
+            return null;
+
+        return _storageControllerContainerListProp.GetValue(container) as List<BlockPos>;
+    }
+
+    /// <summary>
     /// Try to invoke OnPlayerRightClick on a block entity via reflection.
     /// Used for mod containers that don't extend BlockEntityOpenableContainer.
     /// </summary>
@@ -471,6 +577,9 @@ public class PackratModSystem : ModSystem
                               $"{losChecks} LOS checks ({losTimeMs}ms), {chests.Count} accessible, " +
                               $"strictCheck={strictCheck}");
         }
+
+        // Expand Storage Controllers - add their linked containers
+        ExpandStorageControllers(chests, accessor, player);
 
         if (chests.Count > 0)
         {
