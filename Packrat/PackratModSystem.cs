@@ -74,6 +74,10 @@ public class PackratModSystem : ModSystem
         ("BetterCratesNamespace.BetterCrateBlockEntity", false),
         // StorageController - extends BlockEntityGenericTypedContainer, links to other containers
         ("storagecontroller.BlockEntityStorageController", false),
+        // Primitive Survival - placed tree hollows (extends BlockEntityOpenableContainer)
+        ("PrimitiveSurvival.ModSystem.BETreeHollowPlaced", false),
+        // Primitive Survival - grown tree hollows (extends BlockEntityDisplayCase, direct access like crates)
+        ("PrimitiveSurvival.ModSystem.BETreeHollowGrown", false),
     };
 
     // Cache for Storage Controller's ContainerList property (accessed via reflection)
@@ -247,9 +251,9 @@ public class PackratModSystem : ModSystem
             var be = _serverApi.World.BlockAccessor.GetBlockEntity(pos);
             if (be is not BlockEntityContainer container) continue;
 
-            if (IsCrate(container))
+            if (IsDirectAccessContainer(container))
             {
-                // Crates - just open the inventory on the server, client accesses directly
+                // Crates and display cases (like tree hollows) - open inventory directly
                 sender.InventoryManager.OpenInventory(container.Inventory);
                 crateCount++;
             }
@@ -276,7 +280,32 @@ public class PackratModSystem : ModSystem
     }
 
     /// <summary>
-    /// Check if a container is a crate (by inventory ID prefix)
+    /// Check if a container uses direct inventory access (no OpenInventory packet flow).
+    /// This includes crates and display cases (like Primitive Survival's tree hollows).
+    /// These containers don't send inventory packets - we open them directly and wait for server confirmation.
+    /// </summary>
+    private static bool IsDirectAccessContainer(BlockEntityContainer container)
+    {
+        // Check by inventory ID prefix
+        var invId = container.Inventory?.InventoryID;
+        if (invId?.StartsWith("crate-") == true || invId?.StartsWith("bettercrate-") == true)
+            return true;
+
+        // Check by type hierarchy - BlockEntityDisplayCase and its subclasses use direct access
+        // (includes Primitive Survival's BETreeHollowGrown which extends BlockEntityDisplayCase)
+        var checkType = container.GetType();
+        while (checkType != null && checkType != typeof(object))
+        {
+            if (checkType.Name == "BlockEntityDisplayCase" || checkType.Name == "BETreeHollowGrown")
+                return true;
+            checkType = checkType.BaseType;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a container is a crate (by inventory ID prefix) - used for shift-click handling
     /// </summary>
     private static bool IsCrate(BlockEntityContainer container)
     {
@@ -589,12 +618,12 @@ public class PackratModSystem : ModSystem
             _openedContainers.Clear();
             _pendingCrateConfirmation = 0;
 
-            // Separate containers: crates use direct access, everything else uses packets
-            int crateCount = 0;
+            // Separate containers: direct access (crates, display cases) vs packet-based (chests)
+            int directAccessCount = 0;
             foreach (var chest in chests)
             {
-                if (IsCrate(chest))
-                    crateCount++;
+                if (IsDirectAccessContainer(chest))
+                    directAccessCount++;
                 else
                     _pendingPositions.Add(chest.Pos.Copy());
             }
@@ -603,23 +632,23 @@ public class PackratModSystem : ModSystem
             if (_debugLogging)
             {
                 _api.Logger.Debug($"[PackRat] Found {chests.Count} containers total:");
-                _api.Logger.Debug($"[PackRat]   Crates (direct access): {crateCount}");
+                _api.Logger.Debug($"[PackRat]   Direct access (crates/display cases): {directAccessCount}");
                 _api.Logger.Debug($"[PackRat]   Chests (expecting inventory packets): {_pendingPositions.Count}");
                 _api.Logger.Debug($"[PackRat] Candidates expecting inventory packets:");
                 foreach (var chest in chests)
                 {
-                    bool isCrate = IsCrate(chest);
+                    bool isDirect = IsDirectAccessContainer(chest);
                     var invId = chest.Inventory?.InventoryID ?? "null";
                     var blockName = chest.Block?.Code?.ToString() ?? "unknown";
-                    _api.Logger.Debug($"[PackRat]   {chest.Pos} - {blockName} (inv: {invId}) - {(isCrate ? "CRATE" : "CHEST/packet pending")}");
+                    _api.Logger.Debug($"[PackRat]   {chest.Pos} - {blockName} (inv: {invId}) - {(isDirect ? "DIRECT" : "CHEST/packet pending")}");
                 }
             }
 
             // Store all containers for the browser
             _openedContainers.AddRange(chests);
 
-            // Track crate confirmation - we need to wait for server to confirm crates are open
-            _pendingCrateConfirmation = crateCount;
+            // Track direct access confirmation - we need to wait for server to confirm they are open
+            _pendingCrateConfirmation = directAccessCount;
 
             // Send request to server to open ALL container inventories
             var msg = OpenManyMessage.FromContainers(chests);
@@ -665,11 +694,12 @@ public class PackratModSystem : ModSystem
             if (container?.Inventory == null) continue;
 
             bool isCrate = IsCrate(container);
+            bool isDirect = IsDirectAccessContainer(container);
             composite.AddInventory(container.Inventory, isCrate);
 
-            // Make sure crate inventories are opened on the client
-            // (Chests are opened via the Harmony patch, but crates bypass that)
-            if (isCrate && !container.Inventory.HasOpened(player))
+            // Make sure direct access inventories are opened on the client
+            // (Chests are opened via the Harmony patch, but direct access containers bypass that)
+            if (isDirect && !container.Inventory.HasOpened(player))
             {
                 player.InventoryManager.OpenInventory(container.Inventory);
             }
