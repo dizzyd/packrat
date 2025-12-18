@@ -44,6 +44,9 @@ public class GuiDialogStorageBrowser : GuiDialog
     // Track slot count for dynamic recomposition
     private int _lastSlotCount;
 
+    // Saved scroll position for preserving across recomposes
+    private float _savedScrollPosition;
+
     // Colors for container outlines (cycle through these) - RGB values
     private static readonly double[][] ContainerColors = new double[][]
     {
@@ -462,7 +465,20 @@ public class GuiDialogStorageBrowser : GuiDialog
         int currentCount = _sortedInventory.Count;
         if (currentCount != _lastSlotCount)
         {
+            // Save scroll position before recomposing
+            var scrollbar = SingleComposer?.GetScrollbar("scrollbar");
+            _savedScrollPosition = scrollbar?.CurrentYPosition ?? 0f;
+
             ComposeDialog();
+
+            // Restore scroll position after recomposing
+            scrollbar = SingleComposer?.GetScrollbar("scrollbar");
+            if (scrollbar != null && _savedScrollPosition > 0)
+            {
+                scrollbar.CurrentYPosition = _savedScrollPosition;
+                OnScrollbarNewValue(_savedScrollPosition);
+            }
+
             return; // Skip rest of rendering this frame, will render properly next frame
         }
 
