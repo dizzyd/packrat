@@ -25,6 +25,29 @@ public class SortedInventoryView : InventoryBase
     // Track if display order needs rebuilding
     private bool _isDirty;
 
+    // Filter predicate for search filtering
+    private System.Func<int, ItemSlot, bool> _filterPredicate;
+
+    /// <summary>
+    /// Set a filter predicate for search filtering.
+    /// The predicate receives (underlyingSlotIndex, slot) and returns true if slot should be shown.
+    /// Setting to null clears the filter.
+    /// </summary>
+    public System.Func<int, ItemSlot, bool> FilterPredicate
+    {
+        get => _filterPredicate;
+        set
+        {
+            _filterPredicate = value;
+            _isDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// Whether filtering is currently active
+    /// </summary>
+    public bool IsFiltering => _filterPredicate != null;
+
     public SortedInventoryView(CompositeInventoryView underlying)
         : base("sorted", "packrat-sorted-browser", underlying.Api)
     {
@@ -72,45 +95,58 @@ public class SortedInventoryView : InventoryBase
     public CompositeInventoryView Underlying => _underlying;
 
     /// <summary>
-    /// Rebuild the display order based on current sort mode
+    /// Rebuild the display order based on current sort mode and filter
     /// </summary>
     public void RebuildDisplayOrder()
     {
         _isDirty = false;
 
-        if (_sortMode == SortMode.None)
+        // When no sorting AND no filtering, pass through directly
+        if (_sortMode == SortMode.None && _filterPredicate == null)
         {
             _displayOrder = null;
             return;
         }
 
-        // Collect non-empty slots with their sort keys and stack sizes
-        var sortableSlots = new List<(int index, string sortKey, int stackSize)>();
+        // Collect slots that pass the filter (and are non-empty when sorting)
+        var filteredSlots = new List<(int index, string sortKey, int stackSize)>();
 
         for (int i = 0; i < _underlying.Count; i++)
         {
             var slot = _underlying[i];
-            if (slot?.Itemstack == null) continue;
 
-            string sortKey = GetSortKey(slot.Itemstack, _sortMode);
-            int stackSize = slot.Itemstack.StackSize;
-            sortableSlots.Add((i, sortKey, stackSize));
+            // When sorting is active, skip empty slots
+            if (_sortMode != SortMode.None && slot?.Itemstack == null)
+                continue;
+
+            // Apply filter predicate if set
+            if (_filterPredicate != null && !_filterPredicate(i, slot))
+                continue;
+
+            string sortKey = _sortMode != SortMode.None
+                ? GetSortKey(slot.Itemstack, _sortMode)
+                : i.ToString("D6"); // Preserve original order when not sorting
+            int stackSize = slot?.Itemstack?.StackSize ?? 0;
+            filteredSlots.Add((i, sortKey, stackSize));
         }
 
-        // Sort by key, then by stack size (largest first), then by original index for stability
-        sortableSlots.Sort((a, b) =>
+        // Sort if sorting mode is active
+        if (_sortMode != SortMode.None)
         {
-            int cmp = string.Compare(a.sortKey, b.sortKey, StringComparison.OrdinalIgnoreCase);
-            if (cmp != 0) return cmp;
+            filteredSlots.Sort((a, b) =>
+            {
+                int cmp = string.Compare(a.sortKey, b.sortKey, StringComparison.OrdinalIgnoreCase);
+                if (cmp != 0) return cmp;
 
-            // Larger stacks first
-            cmp = b.stackSize.CompareTo(a.stackSize);
-            if (cmp != 0) return cmp;
+                // Larger stacks first
+                cmp = b.stackSize.CompareTo(a.stackSize);
+                if (cmp != 0) return cmp;
 
-            return a.index.CompareTo(b.index);
-        });
+                return a.index.CompareTo(b.index);
+            });
+        }
 
-        _displayOrder = sortableSlots.Select(s => s.index).ToArray();
+        _displayOrder = filteredSlots.Select(s => s.index).ToArray();
     }
 
     /// <summary>
@@ -226,7 +262,8 @@ public class SortedInventoryView : InventoryBase
     {
         get
         {
-            if (_sortMode == SortMode.None)
+            // Pass through only if no sorting AND no filtering
+            if (_sortMode == SortMode.None && _filterPredicate == null)
                 return _underlying.Count;
 
             // Rebuild if dirty before returning count
@@ -243,7 +280,8 @@ public class SortedInventoryView : InventoryBase
     {
         get
         {
-            if (_sortMode == SortMode.None)
+            // Pass through only if no sorting AND no filtering
+            if (_sortMode == SortMode.None && _filterPredicate == null)
                 return _underlying[slotId];
 
             // Rebuild if dirty before accessing slots
@@ -279,7 +317,8 @@ public class SortedInventoryView : InventoryBase
     /// </summary>
     private int TranslateSlotId(int displaySlotId)
     {
-        if (_sortMode == SortMode.None)
+        // Pass through only if no sorting AND no filtering
+        if (_sortMode == SortMode.None && _filterPredicate == null)
             return displaySlotId;
 
         if (_displayOrder == null || displaySlotId < 0 || displaySlotId >= _displayOrder.Length)

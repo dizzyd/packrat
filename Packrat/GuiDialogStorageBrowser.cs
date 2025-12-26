@@ -35,9 +35,6 @@ public class GuiDialogStorageBrowser : GuiDialog
     private List<EnumBlockMaterial> _matchedMaterials = new();
     private List<EnumFoodCategory> _matchedFoodCategories = new();
 
-    // Dimming texture for non-matching slots
-    private LoadedTexture _dimTexture;
-
     // Flag to suppress key press after focusing search
     private bool _suppressNextKeyPress;
 
@@ -46,6 +43,9 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     // Saved scroll position for preserving across recomposes
     private float _savedScrollPosition;
+
+    // Track if search box had focus before recompose
+    private bool _searchHadFocus;
 
     // Colors for container outlines (cycle through these) - RGB values
     private static readonly double[][] ContainerColors = new double[][]
@@ -74,12 +74,6 @@ public class GuiDialogStorageBrowser : GuiDialog
         _sortedInventory = sortedInventory;
         _containers = containers;
         _onSortModeChanged = onSortModeChanged;
-
-        // Create a 1x1 semi-transparent black texture for dimming
-        int dimColor = (220 << 24) | (0 << 16) | (0 << 8) | 0; // ARGB: 86% opacity black
-        var dimBitmap = new BakedBitmap { TexturePixels = new[] { dimColor }, Width = 1, Height = 1 };
-        _dimTexture = new LoadedTexture(capi);
-        _capi.Render.LoadTexture(dimBitmap, ref _dimTexture, false, 0, false);
 
         // Make dialog movable by default (set initial position if none stored)
         if (_capi.Gui.GetDialogPosition(DialogName) == null)
@@ -200,8 +194,25 @@ public class GuiDialogStorageBrowser : GuiDialog
             );
         }
 
-        SingleComposer.GetTextInput("searchbox").SetPlaceHolderText(searchPlaceholder);
-        SingleComposer.UnfocusOwnElements();
+        var searchBox = SingleComposer.GetTextInput("searchbox");
+        searchBox.SetPlaceHolderText(searchPlaceholder);
+
+        // Restore search text if we have one (happens during recompose)
+        if (!string.IsNullOrEmpty(_searchFilter))
+        {
+            searchBox.SetValue(_searchFilter);
+        }
+
+        // Restore focus state from before recompose
+        if (_searchHadFocus)
+        {
+            searchBox.OnFocusGained();
+            _searchHadFocus = false; // Reset for next time
+        }
+        else
+        {
+            SingleComposer.UnfocusOwnElements();
+        }
 
         // Track slot count for dynamic recomposition
         _lastSlotCount = totalSlots;
@@ -224,8 +235,8 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     private void DrawContainerOutlines(Context ctx, ImageSurface surface, ElementBounds currentBounds)
     {
-        // Skip container outlines when sorting is active
-        if (_sortedInventory.IsSorting) return;
+        // Skip container outlines when sorting or filtering is active
+        if (_sortedInventory.IsSorting || _sortedInventory.IsFiltering) return;
 
         double pad = GuiElementItemSlotGrid.unscaledSlotPadding;
         double slotSize = GuiElementPassiveItemSlot.unscaledSlotSize;
@@ -334,28 +345,30 @@ public class GuiDialogStorageBrowser : GuiDialog
                 if (category.ToString().ToLowerInvariant().Contains(_searchFilter))
                     _matchedFoodCategories.Add(category);
             }
+
+            // Set filter predicate to filter the inventory view
+            _sortedInventory.FilterPredicate = SlotMatchesFilterPredicate;
+        }
+        else
+        {
+            // Clear the filter
+            _sortedInventory.FilterPredicate = null;
         }
     }
 
     /// <summary>
-    /// Check if a slot matches the current search filter.
-    /// Empty filter matches everything. Empty slots never match a non-empty filter.
-    /// Matches against item name, material variants, and food category.
+    /// Filter predicate for SortedInventoryView - receives underlying slot index and slot.
     /// </summary>
-    private bool SlotMatchesFilter(int slotIndex)
+    private bool SlotMatchesFilterPredicate(int underlyingIndex, ItemSlot slot)
     {
         if (string.IsNullOrEmpty(_searchFilter)) return true;
 
-        var slot = _sortedInventory[slotIndex];
         if (slot?.Itemstack == null)
         {
-            // When sorting is active, empty slots are filtered out, so no need to check crates
-            if (_sortedInventory.IsSorting) return false;
-
-            // For empty crate slots (only when not sorting), check the template item
-            if (_sortedInventory.Underlying.IsSlotInCrate(slotIndex))
+            // For empty crate slots, check the template item
+            if (_sortedInventory.Underlying.IsSlotInCrate(underlyingIndex))
             {
-                var templateItem = _sortedInventory.Underlying.GetCrateTemplateItem(slotIndex);
+                var templateItem = _sortedInventory.Underlying.GetCrateTemplateItem(underlyingIndex);
                 if (templateItem != null)
                 {
                     return ItemMatchesFilter(templateItem.Collectible, templateItem.GetName());
@@ -419,10 +432,6 @@ public class GuiDialogStorageBrowser : GuiDialog
             }
         }
 
-        // Dispose the dimming texture
-        _dimTexture?.Dispose();
-        _dimTexture = null;
-
         _capi.World.PlaySoundAt(new AssetLocation("sounds/block/chestclose"), player.Entity);
     }
 
@@ -465,9 +474,10 @@ public class GuiDialogStorageBrowser : GuiDialog
         int currentCount = _sortedInventory.Count;
         if (currentCount != _lastSlotCount)
         {
-            // Save scroll position before recomposing
+            // Save scroll position and search focus before recomposing
             var scrollbar = SingleComposer?.GetScrollbar("scrollbar");
             _savedScrollPosition = scrollbar?.CurrentYPosition ?? 0f;
+            _searchHadFocus = SingleComposer?.GetTextInput("searchbox")?.HasFocus ?? false;
 
             ComposeDialog();
 
@@ -500,8 +510,8 @@ public class GuiDialogStorageBrowser : GuiDialog
         double visibleTop = _insetBounds?.absY ?? double.MinValue;
         double visibleBottom = _insetBounds != null ? _insetBounds.absY + _insetBounds.OuterHeight : double.MaxValue;
 
-        // Render ghost items for empty crate slots (only when NOT sorting)
-        if (!_sortedInventory.IsSorting)
+        // Render ghost items for empty crate slots (only when NOT sorting and NOT filtering)
+        if (!_sortedInventory.IsSorting && !_sortedInventory.IsFiltering)
         {
             // Light ghost effect - ~15% opacity white
             int ghostColor = (40 << 24) | (255 << 16) | (255 << 8) | 255;
@@ -539,41 +549,6 @@ public class GuiDialogStorageBrowser : GuiDialog
                     rotate: false,
                     showStackSize: false
                 );
-            }
-        }
-
-        // Render dimming overlay on non-matching slots when search is active
-        if (!string.IsNullOrEmpty(_searchFilter) && _dimTexture?.TextureId > 0)
-        {
-            // Apply scissor clipping using the inset bounds (visible scroll area)
-            if (_insetBounds != null)
-            {
-                _capi.Render.PushScissor(_insetBounds, true);
-            }
-
-            for (int i = 0; i < _sortedInventory.Count; i++)
-            {
-                if (SlotMatchesFilter(i)) continue;
-
-                int row = i / Cols;
-                int col = i % Cols;
-                double slotX = gridX + col * cellSize;
-                double slotY = gridY + row * cellSize;
-
-                // Skip if fully outside visible clip area (optimization)
-                if (slotY + cellSize < visibleTop || slotY > visibleBottom) continue;
-
-                _capi.Render.Render2DTexturePremultipliedAlpha(
-                    _dimTexture.TextureId,
-                    (float)slotX, (float)slotY,
-                    (float)cellSize, (float)cellSize,
-                    500  // High z-depth to render in front of items
-                );
-            }
-
-            if (_insetBounds != null)
-            {
-                _capi.Render.PopScissor();
             }
         }
     }
