@@ -594,6 +594,17 @@ public class PackratModSystem : ModSystem
             bool isLocked = _reinforcementSystem.IsLockedForInteract(blockPos, player);
             if (!isLocked)
             {
+                // Skip empty retrieveOnly containers (e.g., looted ruin chests)
+                // These won't send inventory packets when OnPlayerRightClick is called
+                if (container is BlockEntityGenericTypedContainer typed &&
+                    typed.retrieveOnly &&
+                    typed.Inventory.Empty)
+                {
+                    if (_debugLogging)
+                        _api.Logger.Debug($"[PackRat] Skipping empty retrieveOnly container at {blockPos}");
+                    return; // Skip this container
+                }
+
                 chests.Add(container);
             }
         });
