@@ -429,6 +429,13 @@ public class GuiDialogStorageBrowser : GuiDialog
             {
                 _capi.Network.SendPacketClient(container.Inventory.Close(player));
                 player.InventoryManager.CloseInventory(container.Inventory);
+
+                // Send BlockEntity close packet for containers with lids so server broadcasts
+                // the lid state change to all clients
+                if (container is BlockEntityOpenableContainer)
+                {
+                    _capi.Network.SendBlockEntityPacket(container.Pos, (int)EnumBlockEntityPacketId.Close, null);
+                }
             }
         }
 
