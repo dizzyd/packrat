@@ -160,13 +160,21 @@ public class SortedInventoryView : InventoryBase
 
         return mode switch
         {
-            SortMode.Alphabetical => stack.GetName() ?? collectible.Code?.ToString() ?? "zzz",
+            SortMode.Alphabetical => GetAlphabeticalKey(stack),
             SortMode.ByCategory => $"{(int)GetItemCategory(collectible):D2}_{stack.GetName()}",
             SortMode.ByMaterial => $"{GetMaterialKey(collectible)}_{stack.GetName()}",
             // Needs padding for the string sort to work with numbers
-            SortMode.ByPerishable => GetRealFreshHoursLeft(slot)?.ToString("0000000000.0000") ?? "zzz",
+            SortMode.ByPerishable => GetRealFreshHoursLeft(slot)?.ToString("0000000000.0000") ?? GetAlphabeticalKey(stack),
             _ => "zzz"
         };
+    }
+
+    /// <summary>
+    /// Get a sort key for Alphabetical sorting
+    /// </summary>
+    private static string GetAlphabeticalKey(ItemStack stack)
+    {
+        return stack.GetName() ?? stack.Collectible.Code?.ToString() ?? "zzz";
     }
 
     /// <summary>
