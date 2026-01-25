@@ -23,7 +23,12 @@ public enum SortMode
     /// <summary>
     /// Sort by material type (Stone, Metal, Wood, etc.)
     /// </summary>
-    ByMaterial
+    ByMaterial,
+    
+    /// <summary>
+    /// Sort by hours till item starts perish transition
+    /// </summary>
+    ByPerishable
 }
 
 /// <summary>

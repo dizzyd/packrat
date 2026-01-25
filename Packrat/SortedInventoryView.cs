@@ -124,7 +124,7 @@ public class SortedInventoryView : InventoryBase
                 continue;
 
             string sortKey = _sortMode != SortMode.None
-                ? GetSortKey(slot.Itemstack, _sortMode)
+                ? GetSortKey(slot, _sortMode)
                 : i.ToString("D6"); // Preserve original order when not sorting
             int stackSize = slot?.Itemstack?.StackSize ?? 0;
             filteredSlots.Add((i, sortKey, stackSize));
@@ -152,8 +152,9 @@ public class SortedInventoryView : InventoryBase
     /// <summary>
     /// Get the sort key for an item based on the sort mode
     /// </summary>
-    private string GetSortKey(ItemStack stack, SortMode mode)
+    private string GetSortKey(ItemSlot slot, SortMode mode)
     {
+        var stack = slot.Itemstack;
         var collectible = stack.Collectible;
         if (collectible == null) return "zzz"; // Sort unknowns to end
 
@@ -162,8 +163,30 @@ public class SortedInventoryView : InventoryBase
             SortMode.Alphabetical => stack.GetName() ?? collectible.Code?.ToString() ?? "zzz",
             SortMode.ByCategory => $"{(int)GetItemCategory(collectible):D2}_{stack.GetName()}",
             SortMode.ByMaterial => $"{GetMaterialKey(collectible)}_{stack.GetName()}",
+            // Needs padding for the string sort to work with numbers
+            SortMode.ByPerishable => GetRealFreshHoursLeft(slot)?.ToString("0000000000.0000") ?? "zzz",
             _ => "zzz"
         };
+    }
+
+    /// <summary>
+    /// Get the hours left till an item starts to perish in its current container
+    /// </summary>
+    /// <remarks>Ignores temperature as it is irrelevant for sorting</remarks>
+    private float? GetRealFreshHoursLeft(ItemSlot slot)
+    {
+        // Get hours left till spoilage without container multiplier
+        var freshHoursLeft = slot.Itemstack.Collectible.UpdateAndGetTransitionState(_underlying.Api.World, slot, EnumTransitionType.Perish)?.FreshHoursLeft;
+        
+        // Return if not perishable
+        if (freshHoursLeft is null)
+            return null;
+        
+        // Get spoilage multiplier for current container
+        var perishMultiplier = slot.Inventory.GetTransitionSpeedMul(EnumTransitionType.Perish, slot.Itemstack);
+        
+        // Calculate real hours left till spoilage
+        return (float)freshHoursLeft / perishMultiplier;
     }
 
     /// <summary>
