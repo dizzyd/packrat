@@ -30,6 +30,9 @@ public class OpenManyConfirmMessage
 {
     [ProtoMember(1)]
     public int CrateCount { get; set; }
+
+    [ProtoMember(2)]
+    public List<BlockPos> SkippedPositions { get; set; }
 }
 
 [HarmonyPatch]
@@ -49,6 +52,7 @@ public class PackratModSystem : ModSystem
     private static List<BlockEntityContainer> _openedContainers = new();
     private static GuiDialogStorageBrowser _browserDialog;
     private static int _pendingCrateConfirmation; // Number of crates waiting for server confirmation
+    private static long _browseTimeoutCallbackId; // Timeout callback to handle unresponsive containers
 
     // Client config (persisted)
     private static PackratConfig _config;
@@ -237,6 +241,8 @@ public class PackratModSystem : ModSystem
         base.StartServerSide(api);
         _serverApi = api;
 
+        _reinforcementSystem = api.ModLoader.GetModSystem<ModSystemBlockReinforcement>();
+
         api.Network
             .GetChannel(Mod.Info.ModID)
             .SetMessageHandler<OpenManyMessage>(HandleOpenManyRequest);
@@ -245,11 +251,20 @@ public class PackratModSystem : ModSystem
     private void HandleOpenManyRequest(IServerPlayer sender, OpenManyMessage msg)
     {
         int crateCount = 0;
+        List<BlockPos> skippedPositions = null;
 
         foreach (var pos in msg.Positions)
         {
             var be = _serverApi.World.BlockAccessor.GetBlockEntity(pos);
             if (be is not BlockEntityContainer container) continue;
+
+            // Check if player has permission to access this container
+            if (_reinforcementSystem?.IsLockedForInteract(pos, sender) == true)
+            {
+                skippedPositions ??= new List<BlockPos>();
+                skippedPositions.Add(pos);
+                continue;
+            }
 
             if (IsDirectAccessContainer(container))
             {
@@ -269,14 +284,11 @@ public class PackratModSystem : ModSystem
             }
         }
 
-        // Send confirmation back to client that all crate inventories are now open
-        if (crateCount > 0)
-        {
-            _serverApi.Network.GetChannel(Mod.Info.ModID).SendPacket(
-                new OpenManyConfirmMessage { CrateCount = crateCount },
-                sender
-            );
-        }
+        // Always send confirmation back to client (includes skipped positions so client doesn't wait forever)
+        _serverApi.Network.GetChannel(Mod.Info.ModID).SendPacket(
+            new OpenManyConfirmMessage { CrateCount = crateCount, SkippedPositions = skippedPositions },
+            sender
+        );
     }
 
     /// <summary>
@@ -374,7 +386,7 @@ public class PackratModSystem : ModSystem
                     continue;
 
                 // Check reinforcement
-                if (!_reinforcementSystem.IsLockedForInteract(pos, player))
+                if (_reinforcementSystem?.IsLockedForInteract(pos, player) != true)
                 {
                     containers.Add(linkedContainer);
                     existingPositions.Add(pos);
@@ -445,6 +457,39 @@ public class PackratModSystem : ModSystem
         _browseMode = false;
         _pendingPositions.Clear();
         _pendingCrateConfirmation = 0;
+
+        // Cancel any pending timeout
+        if (_browseTimeoutCallbackId != 0)
+        {
+            _clientApi?.Event.UnregisterCallback(_browseTimeoutCallbackId);
+            _browseTimeoutCallbackId = 0;
+        }
+    }
+
+    /// <summary>
+    /// Called when the browse timeout expires. Shows the browser with whatever containers
+    /// have responded, giving up on any that haven't (version mismatch, incompatible mods, etc.)
+    /// </summary>
+    private static void OnBrowseTimeout(float dt)
+    {
+        // Check browse mode first to avoid race with ResetBrowseMode
+        if (!_browseMode)
+        {
+            _browseTimeoutCallbackId = 0;
+            return; // Already finished
+        }
+
+        _browseTimeoutCallbackId = 0; // Callback has fired, clear the ID
+
+        if (_debugLogging)
+        {
+            _clientApi?.Logger.Debug($"[PackRat] Browse timeout - {_pendingPositions.Count} positions still pending, {_pendingCrateConfirmation} crates unconfirmed");
+        }
+
+        // Give up waiting and show browser with whatever containers we have
+        _pendingPositions.Clear();
+        _pendingCrateConfirmation = 0;
+        ShowBrowser();
     }
 
     private bool HasLineOfSightTo(IPlayer player, Vec3d targetPoint)
@@ -591,7 +636,7 @@ public class PackratModSystem : ModSystem
             }
 
             // Check reinforcement system permits access
-            bool isLocked = _reinforcementSystem.IsLockedForInteract(blockPos, player);
+            bool isLocked = _reinforcementSystem?.IsLockedForInteract(blockPos, player) == true;
             if (!isLocked)
             {
                 // Skip empty retrieveOnly containers (e.g., looted ruin chests)
@@ -665,6 +710,9 @@ public class PackratModSystem : ModSystem
             var msg = OpenManyMessage.FromContainers(chests);
             _clientApi.Network.GetChannel(Mod.Info.ModID).SendPacket(msg);
 
+            // Register a timeout in case some containers don't respond (version mismatch, incompatible mods, etc.)
+            _browseTimeoutCallbackId = _clientApi.Event.RegisterCallback(OnBrowseTimeout, 3000);
+
             // If we have no chests (only crates) and no crates, show browser immediately (shouldn't happen)
             // Otherwise, browser will be shown when:
             // - All chest inventory packets are received (via Harmony patch), AND
@@ -681,6 +729,16 @@ public class PackratModSystem : ModSystem
     private void HandleOpenManyConfirm(OpenManyConfirmMessage msg)
     {
         _pendingCrateConfirmation = 0;
+
+        // Remove any positions that the server skipped (e.g., due to permission denial)
+        if (msg.SkippedPositions != null)
+        {
+            foreach (var pos in msg.SkippedPositions)
+            {
+                _pendingPositions.Remove(pos);
+                _openedContainers.RemoveAll(c => c.Pos.Equals(pos));
+            }
+        }
 
         // If we're still in browse mode and no more pending chest packets, show browser
         if (_browseMode && _pendingPositions.Count == 0)
