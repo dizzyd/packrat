@@ -321,6 +321,12 @@ public class SortedInventoryView : InventoryBase
         if (_sortMode == SortMode.None && _filterPredicate == null)
             return displaySlotId;
 
+        // Rebuild if dirty before translating, so we resolve against current contents
+        if (_isDirty)
+        {
+            RebuildDisplayOrder();
+        }
+
         if (_displayOrder == null || displaySlotId < 0 || displaySlotId >= _displayOrder.Length)
             return -1;
 
