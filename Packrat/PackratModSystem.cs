@@ -816,7 +816,8 @@ public class PackratModSystem : ModSystem
         }
 
         // Only scan from player's feet level and up (allow one block below for chests player stands on)
-        var playerFeetY = player.Entity.Pos.AsBlockPos.Y - 1;
+        var playerBlockPos = player.Entity.Pos.AsBlockPos;
+        var playerFeetY = playerBlockPos.Y - 1;
         startPos.Y = Math.Max(startPos.Y, playerFeetY);
 
         // Timing instrumentation
@@ -825,6 +826,7 @@ public class PackratModSystem : ModSystem
         int blocksWalked = 0;
         int containersFound = 0;
         int losChecks = 0;
+        int roomRejects = 0;
 
         // Now that we have our area to scan, do the scan - taking into account anything that
         // might be blocking the player's ability to interact with the storage
@@ -846,10 +848,26 @@ public class PackratModSystem : ModSystem
             // When using ranged scan, don't bother with any containers that are out of reach or that the player
             // can't see directly
             var blockCenter = new Vec3d(x + 0.5, y + 0.5, z + 0.5);
+            if (strictCheck && player.Entity.Pos.DistanceTo(blockCenter) > 5.1) return;
+
+            // A container sealed inside a room belongs to that room, not to whoever can see
+            // into it. Without this, standing outside an enclosed cellar and looking through
+            // the doorway pulls its containers in, while standing inside the cellar correctly
+            // excludes everything outside - an asymmetry with no justification.
+            //
+            // This also tightens the in-room branch: room.Location is only a bounding box (the
+            // Room class says so explicitly), so a sealed closet inside a larger room's box
+            // would otherwise leak its containers in. Room.Contains consults the room's
+            // PosInRoom mask, so it answers real membership rather than box containment.
+            var containerRoom = _roomSystem?.GetRoomForPosition(blockPos);
+            if (containerRoom is { ExitCount: 0 } && !containerRoom.Contains(playerBlockPos))
+            {
+                roomRejects++;
+                return;
+            }
+
             if (strictCheck)
             {
-                if (player.Entity.Pos.DistanceTo(blockCenter) > 5.1) return;
-
                 losChecks++;
                 var losTimer = Stopwatch.StartNew();
                 bool hasLos = HasLineOfSightTo(player, blockCenter);
@@ -881,7 +899,8 @@ public class PackratModSystem : ModSystem
         {
             _api.Logger.Debug($"[PackRat] Scan: {scanTimer.ElapsedMilliseconds}ms total, " +
                               $"{blocksWalked} blocks walked, {containersFound} containers found, " +
-                              $"{losChecks} LOS checks ({losTimeMs}ms), {chests.Count} accessible, " +
+                              $"{losChecks} LOS checks ({losTimeMs}ms), {roomRejects} rejected as another room's, " +
+                              $"{chests.Count} accessible, " +
                               $"strictCheck={strictCheck}");
         }
 

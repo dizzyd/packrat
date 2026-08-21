@@ -18,6 +18,10 @@ What counts as "reachable" depends on where you are standing:
 - **Out in the open**, containers within about 5 blocks open, as long as you can
   actually see them.
 
+In either case, containers sealed inside a room you are not standing in are left
+alone, even if you can see and reach them through a doorway. A room's storage
+belongs to whoever is in the room.
+
 Containers locked against you by block reinforcement are skipped.
 
 The browser has a search box and a sort dropdown (alphabetical, by category, by
