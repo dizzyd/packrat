@@ -919,6 +919,13 @@ public class PackratModSystem : ModSystem
         }
     }
 
+    // Bounds that InWorldContainer.GetPerishRate() clamps its own result to. The perish
+    // bonus is normalised against them rather than against 1.0, so it stays meaningful when
+    // every candidate is above 1.0.
+    private const float MinPerishRate = 0.1f;
+    private const float MaxPerishRate = 2.4f;
+    private const float PerishBonusMax = 10f;             // dominates type priority by design
+
     /// <summary>
     /// Harmony postfix to prefer containers with lower perish rates for perishable items.
     /// Cellars, ice boxes, storage vessels, etc. will be preferred over normal storage.
@@ -932,6 +939,13 @@ public class PackratModSystem : ModSystem
     {
         // If no valid slot was found, nothing to do
         if (__result.slot == null)
+            return;
+
+        // Only block containers are compared on how well they preserve food. Player
+        // inventories have no position and report a placeholder rate of exactly 1.0, which
+        // the normalised curve would turn into a large bonus - enough for a backpack to beat
+        // a chest. The old clamped formula happened to map 1.0 to zero and hid this.
+        if (__instance.Pos == null)
             return;
 
         // Check if source item is perishable
@@ -956,12 +970,17 @@ public class PackratModSystem : ModSystem
         // Get the perish rate for this inventory
         float perishRate = __instance.GetTransitionSpeedMul(EnumTransitionType.Perish, stack);
 
-        // Adjust weight: lower perish rate = higher weight
-        // perishRate 0 -> +10 bonus (ice box / zero perish)
-        // perishRate 0.5 -> +5 bonus (cellar)
-        // perishRate 1.0 -> +0 bonus (normal storage)
-        // perishRate > 1 -> no bonus (bad storage)
-        float bonus = Math.Max(0f, (1f - perishRate) * 10f);
+        // Lower perish rate = higher weight, normalised across the whole range of rates the
+        // game can produce.
+        //
+        // This used to be Math.Max(0f, (1f - perishRate) * 10f), which gave every rate at or
+        // above 1.0 the same zero bonus. In a warm climate that is every container in the
+        // world - a chest and a storage vessel in the same room report 2.4 and 1.8, both
+        // clamped to zero - so the preference silently did nothing precisely where good
+        // storage matters most. Normalising instead of clamping keeps it monotonic, so the
+        // vessel still wins even though both containers are "bad" in absolute terms.
+        float rate = GameMath.Clamp(perishRate, MinPerishRate, MaxPerishRate);
+        float bonus = PerishBonusMax * (MaxPerishRate - rate) / (MaxPerishRate - MinPerishRate);
         __result.weight += bonus;
 
         if (_debugLogging)
