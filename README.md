@@ -129,6 +129,52 @@ things were opened in.
 
 The built mod lands in the `Releases` directory.
 
+## Testing
+
+`tests/` holds an in-game suite that runs against a real, running Vintage Story
+world via [vstestkit](../vstestkit):
+
+```bash
+cd ../vstestkit
+
+# the seams, headless
+bash scripts/run.sh ../Packrat/tests --mod ../Packrat/Packrat
+
+# plus the storage mods Packrat claims to support, and both game sides
+cairn-cli sync packratcompat
+bash scripts/run.sh ../Packrat/tests --mod ../Packrat/Packrat \
+     --mods ~/.cairn/packs/packratcompat/Mods --client
+```
+
+**Why bother, when the mod compiles.** Almost none of Packrat's risk is in its
+own logic — it is in the seams where it reaches into the game and into other
+mods by name, every one of which compiles perfectly once the target has moved:
+
+- Four Harmony patches on an **overload of `InventoryBase.GetBestSuitedSlot`
+  selected by argument types**. Add a parameter upstream and the attribute
+  matches nothing; shift-click routing silently reverts to vanilla.
+- `OnReceivedServerPacket` intercepted **by name and `(int, byte[])`
+  signature**, and `OnPlayerRightClick` invoked reflectively.
+- **Six mod container types resolved from string type names.** These are
+  *designed* to fail quietly — Packrat must not hard-depend on six optional
+  mods — so a renamed type does not break anything, it just stops being
+  supported, and the only sign is a missing line in a log nobody reads.
+
+| suite | asserts |
+|---|---|
+| `PackratIntegration` | the patch targets still exist, all four patches attach, each exactly once, and chests and crates are still the block entity types the scan registry keys on |
+| `PackratModCompat` | each supported mod's container type resolves *and* lands in Packrat's scan registry, checked against the real mods rather than a string comparison |
+
+The compat suite needs the `packratcompat` pack (Primitive Survival and QP's
+Storage Controller). Without it each test logs "this test proved nothing" and
+passes, so read the log line rather than the green tick.
+
+`PatchesAreRegisteredExactlyOnce` is `[RequiresClient]` on purpose. `Start()`
+runs once per side and in singleplayer both sides resolve the same assembly, so
+a bare `PatchAll()` there registers everything twice — headless has one side and
+cannot tell the difference. Packrat guards this with `Harmony.HasAnyPatches`;
+the test pins that guard.
+
 ## Installation
 
 Copy the `.zip` from `Releases` into your Vintage Story `Mods` folder.

@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Authoring only. The tests are compiled inside the game from the .cs files in
+    this directory, so nothing here has to be built to run them:
+
+        run.sh ../Packrat/tests --mod ../Packrat/Packrat
+
+    This project exists so an editor can type-check them against the mod and the
+    game. Building it is optional and needs VSTESTKIT set.
+  -->
+  <PropertyGroup>
+    <AssemblyName>packrat.tests</AssemblyName>
+    <RootNamespace>Packrat.Tests</RootNamespace>
+    <TargetFramework>net10.0</TargetFramework>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>bin\$(Configuration)</OutputPath>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="VsTestkit.Runtime">
+      <HintPath>$(VSTESTKIT)/VsTestkit.Runtime/bin/Debug/VsTestkit.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Packrat">
+      <HintPath>../Packrat/bin/Debug/Mods/mod/Packrat.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VintagestoryAPI">
+      <HintPath>$(VINTAGE_STORY)/VintagestoryAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VintagestoryLib">
+      <HintPath>$(VINTAGE_STORY)/VintagestoryLib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(VINTAGE_STORY)/Lib/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VSSurvivalMod">
+      <HintPath>$(VINTAGE_STORY)/Mods/VSSurvivalMod.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
