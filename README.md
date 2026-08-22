@@ -164,6 +164,28 @@ mods by name, every one of which compiles perfectly once the target has moved:
 |---|---|
 | `PackratIntegration` | the patch targets still exist, all four patches attach, each exactly once, and chests and crates are still the block entity types the scan registry keys on |
 | `PackratModCompat` | each supported mod's container type resolves *and* lands in Packrat's scan registry, checked against the real mods rather than a string comparison |
+| `PackratInsertPriority` | where a shift-click lands — existing stack beats empty, an empty crate ranks last, a mismatched crate is refused outright, block containers outrank a positionless inventory, and no two containers ever score exactly equal |
+| `PackratRooms` | a sealed shell registers as a room with no exits, a container in one preserves food better, and the perish bonus matches the normalised curve exactly |
+| `PackratDiscovery` | which containers the hotkey opens — in-room, range-limited outdoors, non-storage block entities excluded, and a container sealed in a closet left to that closet. Needs `--client` |
+
+The priority and room suites assert on the **weight** `GetBestSuitedSlot` returns
+rather than on where an item visibly ends up, because that is where the rules
+actually live — the README states them in words, the mod expresses them as
+arithmetic on that weight. It is also exact, and does not depend on the order
+containers happened to open in.
+
+Two of those are worth knowing about if you change the weighting:
+
+- **No two containers may ever tie.** A shift-click's destination is never
+  transmitted — the packet carries only the source slot — so the server re-derives
+  it by running the same weighting. A tie resolves to whichever inventory was
+  opened last, an order the two sides do not reliably share, so a tie lets client
+  and server pick different containers and the items snap back on the next sync.
+- **The perish bonus is pinned to its formula, not just its direction.** It used
+  to be `Math.Max(0f, (1f - rate) * 10f)`, which hands every rate at or above 1.0
+  the same zero — so in a warm spot the preference silently did nothing. A test
+  that only checks "the cellar wins" cannot tell the two formulas apart; one that
+  reproduces the curve can.
 
 The compat suite needs the `packratcompat` pack (Primitive Survival and QP's
 Storage Controller). Without it each test logs "this test proved nothing" and
