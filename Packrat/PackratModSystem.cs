@@ -1091,6 +1091,32 @@ public class PackratModSystem : ModSystem
     /// <summary>
     /// Harmony prefix to block container-to-container transfers.
     /// When shift-clicking FROM a container, items should go to player inventory, not other containers.
+    ///
+    /// Both ends are identified by Pos, not by inventory ID. An inventory with a block
+    /// position is a block container; the player's own inventories have none. The ID is
+    /// the wrong handle for this: it comes from the block's inventoryClassName, so
+    /// chest.json, chest-trunk.json, chest-labeled.json and storagevessel.json all read
+    /// "chest" while the stationary basket reads "basket" - and a fixed list of ID
+    /// prefixes silently misses every container not on it. A basket left both ends of the
+    /// test unrecognised, so shift-clicking out of the browser routed items into a basket
+    /// rather than into the player, and out of a basket into any other container.
+    ///
+    /// Pos is also exactly what GetBestSuitedSlot_ContainerPreference keys its lift on, so
+    /// the set of inventories lifted above the player is now the same set blocked from
+    /// receiving from another container. That pairing is the point: the lift is what makes
+    /// an unblocked container beat the player's own pack.
+    ///
+    /// Scoped to a shift-click, because container-to-container is exactly what the game's
+    /// own automation does and it must keep working. BlockEntityItemFlow.TryPullFrom asks a
+    /// chute for the best slot with an adjacent chest's slot as the source - both
+    /// positioned - and BECrate, BETrough and BehaviorContainer do the same shape of thing.
+    /// Every one of them calls GetBestSuitedSlot with a null op, and the chute builds its
+    /// own transfer op with no modifier keys, so ShiftDown separates a player moving items
+    /// by hand from a machine moving them on its own.
+    ///
+    /// ShiftDown rather than ActingPlayer: the shift-click path sets both, but only one of
+    /// them exists on a headless server with nobody connected, which is where this is
+    /// tested.
     /// </summary>
     [HarmonyPrefix]
     [HarmonyPatch(typeof(InventoryBase), nameof(InventoryBase.GetBestSuitedSlot),
@@ -1098,18 +1124,16 @@ public class PackratModSystem : ModSystem
     public static bool GetBestSuitedSlot_BlockContainerToContainer(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots,
         InventoryBase __instance, ref WeightedSlot __result)
     {
-        // Check if source is from a container (chest or crate)
-        var sourceInvId = sourceSlot?.Inventory?.InventoryID;
-        if (sourceInvId != null && (sourceInvId.StartsWith("chest-") || sourceInvId.StartsWith("crate-") || sourceInvId.StartsWith("bettercrate-")))
+        // Hoppers, chutes and troughs move items between containers on their own - leave
+        // them alone. Only a shift-click is redirected.
+        if (op == null || !op.ShiftDown) return true;
+
+        // Source is a block container and so is the destination - refuse, so the item
+        // falls through to the player's own inventory
+        if (sourceSlot?.Inventory is InventoryBase source && source.Pos != null && __instance.Pos != null)
         {
-            // Source is from a container - block all other containers as destinations
-            // This forces items to go to player inventory
-            if (__instance.InventoryID != null &&
-                (__instance.InventoryID.StartsWith("chest-") || __instance.InventoryID.StartsWith("crate-") || __instance.InventoryID.StartsWith("bettercrate-")))
-            {
-                __result = new WeightedSlot();
-                return false;
-            }
+            __result = new WeightedSlot();
+            return false;
         }
 
         return true;
