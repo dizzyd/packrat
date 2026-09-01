@@ -73,6 +73,14 @@ jobs:
           test -f "$zip"
           echo "ZIP=$zip" >> "$GITHUB_ENV"
           echo "ZIP_SHA256=$(sha256sum "$zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          sha256sum "$zip"
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: packrat-${{ env.VERSION }}
+          path: ${{ env.ZIP }}
+          if-no-files-found: error
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
