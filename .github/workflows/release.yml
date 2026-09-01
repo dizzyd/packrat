@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      game_version:
+        description: "Vintage Story version to build against"
+        required: false
+
+# Needed by actions/attest-build-provenance (id-token, attestations) and
+# `gh release create` (contents).
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  # The game version the mod is compiled against. Its assemblies end up in the
+  # DLL's assembly references, so this is part of the build inputs and is
+  # recorded in the release notes.
+  GAME_VERSION: "1.22.7"
+  DOTNET_VERSION: "10.0.302"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Check modinfo.json matches the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          mod=$(jq -r .version Packrat/modinfo.json)
+          if [ "$tag" != "$mod" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match modinfo.json version $mod"
+            exit 1
+          fi
+          echo "VERSION=$mod" >> "$GITHUB_ENV"
+
+      - name: Resolve version (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: echo "VERSION=$(jq -r .version Packrat/modinfo.json)" >> "$GITHUB_ENV"
+
+      - name: Fetch the game
+        run: |
+          version="${{ github.event.inputs.game_version || env.GAME_VERSION }}"
+          tarball="vs_server_linux-x64_${version}.tar.gz"
+          curl -fsSL -o "$tarball" "https://cdn.vintagestory.at/gamefiles/stable/${tarball}"
+          mkdir -p game && tar xzf "$tarball" -C game
+          {
+            echo "VINTAGE_STORY=$PWD/game"
+            echo "BUILT_AGAINST=$version"
+            echo "GAME_SHA256=$(sha256sum "$tarball" | cut -d' ' -f1)"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          ./build.sh
+          echo "SDK_VERSION=$(dotnet --version)" >> "$GITHUB_ENV"
+
+      - name: Hash the artifact
+        run: |
+          zip="Releases/packrat_${VERSION}.zip"
+          test -f "$zip"
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+          echo "ZIP_SHA256=$(sha256sum "$zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ env.ZIP }}
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=$(mktemp)
+          cat > "$notes" <<EOF
+          Built by GitHub Actions from \`${GITHUB_SHA}\`.
+
+          | | |
+          | --- | --- |
+          | \`packrat_${VERSION}.zip\` sha256 | \`${ZIP_SHA256}\` |
+          | Compiled against | Vintage Story ${BUILT_AGAINST} |
+          | \`vs_server_linux-x64_${BUILT_AGAINST}.tar.gz\` sha256 | \`${GAME_SHA256}\` |
+          | .NET SDK | ${SDK_VERSION} |
+
+          The zip uploaded to ModDB is this exact file — ModDB stores uploads
+          byte for byte, so the sha256 above should match what you download there.
+
+          Verify the build provenance:
+
+          \`\`\`
+          gh attestation verify packrat_${VERSION}.zip --repo ${GITHUB_REPOSITORY}
+          \`\`\`
+          EOF
+          gh release create "$GITHUB_REF_NAME" "$ZIP" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$notes"
