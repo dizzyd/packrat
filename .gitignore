@@ -2,7 +2,12 @@ bin/
 obj/
 Releases/
 /packages/
+.DS_Store
 riderModule.iml
 /_ReSharper.Caches/
 .idea
 *.sln.DotSettings.user
+
+# Screenshots are generated, not authored: scripts/make-shots.sh drives a real game and produces
+# them. The mechanism is tracked, the output is not - see docs/screenshots/README.md.
+docs/screenshots/*.png
