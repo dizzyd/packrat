@@ -96,6 +96,42 @@ namespace Packrat.Tests
         }
 
         [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task AContainerJustOutsideTheRoomBoxIsNotPulledIn()
+        {
+            // The in-room bounds are widened by a block, so that a container sealed into
+            // the room's own shell is walked at all - room.Location is the bounding box of
+            // the *interior*, and a container in the shell sits one block outside it.
+            //
+            // That widened ring is not all wall. A position on it that touches the
+            // interior only diagonally can be open air outside the room, and a chest
+            // standing there is in no sealed room, so the rule about sealed rooms would
+            // not catch it. Only a container that seals itself may be admitted from the
+            // ring.
+            await BuildSealedRoom();
+
+            // An edge of the shell, adjacent to the interior only diagonally - removing it
+            // opens a pocket to the outside without unsealing the room.
+            var pocket = P(1, 3, 3);
+            World.SetBlock("game:air", pocket);
+            World.SetBlock("game:air", P(1, 3, 2));
+            World.SetBlock(Chest, pocket);
+            await Ticks(10);
+
+            await Player.Teleport(InsideStand);
+            await Ticks(10);
+
+            var room = Sapi.ModLoader.GetModSystem<RoomRegistry>().GetRoomForPosition(InsideStand);
+            Assert.Equal(0, room.ExitCount, "the room is still sealed");
+            Assert.False(room.Location.ContainsOrTouches(pocket), "the chest is outside the room box");
+
+            var found = await Scan();
+            Log(Describe(found) + $"  (pocket={Show(pocket)} room={room.Location})");
+            Assert.False(found.Contains(pocket), "a chest in the open just outside the room box");
+
+            await Task.CompletedTask;
+        }
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
         public async Task OutInTheOpenOnlyNearbyContainersAreFound()
         {
             // No room, so the scan falls back to range plus line of sight. The far

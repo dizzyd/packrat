@@ -102,6 +102,11 @@ Packrat picks up containers from Sortable Storage, Containers Bundle, Better Cra
 QP's Storage Controller (including its linked containers) and Primitive Survival's tree
 hollows, alongside all the vanilla ones.
 
+A container carrying a **Chisel it Everywhere** overlay opens too, including one set into
+a wall. That mod makes the block it carves over seal the room the way a wall does, which
+used to take the container out of the room as far as Packrat was concerned and leave it
+out of the browser.
+
 ## Upgrading from 1.1.x
 
 **Empty crates are no longer the preferred shift-click target.** Previously an empty
@@ -140,7 +145,7 @@ cd ../vstestkit
 # the seams, headless
 bash scripts/run.sh ../Packrat/tests --mod ../Packrat/Packrat
 
-# plus the storage mods Packrat claims to support, and both game sides
+# plus the other authors' mods Packrat claims to work with, and both game sides
 cairn-cli sync packratcompat
 bash scripts/run.sh ../Packrat/tests --mod ../Packrat/Packrat \
      --mods ~/.cairn/packs/packratcompat/Mods --client
@@ -167,6 +172,7 @@ mods by name, every one of which compiles perfectly once the target has moved:
 | `PackratInsertPriority` | where a shift-click lands — existing stack beats empty, an empty crate ranks last, a mismatched crate is refused outright, block containers outrank a positionless inventory, and no two containers ever score exactly equal |
 | `PackratRooms` | a sealed shell registers as a room with no exits, a container in one preserves food better, and the perish bonus matches the normalised curve exactly |
 | `PackratDiscovery` | which containers the hotkey opens — in-room, range-limited outdoors, non-storage block entities excluded, and a container sealed in a closet left to that closet. Needs `--client` |
+| `PackratChiselOverlay` | a container carrying a Chisel it Everywhere overlay is still found — standing in the room, set into its wall, and out in the open — while one sealed in a closet or bricked into rock stays shut. Needs `--client` and the mod |
 
 The priority and room suites assert on the **weight** `GetBestSuitedSlot` returns
 rather than on where an item visibly ends up, because that is where the rules
@@ -187,9 +193,10 @@ Two of those are worth knowing about if you change the weighting:
   that only checks "the cellar wins" cannot tell the two formulas apart; one that
   reproduces the curve can.
 
-The compat suite needs the `packratcompat` pack (Primitive Survival and QP's
-Storage Controller). Without it each test logs "this test proved nothing" and
-passes, so read the log line rather than the green tick.
+The compat and chisel suites need the `packratcompat` pack (Primitive Survival,
+QP's Storage Controller and Chisel it Everywhere). Without it each test logs
+"this test proved nothing" and passes, so read the log line rather than the
+green tick.
 
 `PatchesAreRegisteredExactlyOnce` is `[RequiresClient]` on purpose. `Start()`
 runs once per side and in singleplayer both sides resolve the same assembly, so

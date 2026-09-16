@@ -775,6 +775,50 @@ public class PackratModSystem : ModSystem
     }
 
     /// <summary>
+    /// Whether this "room" is nothing but the block at <paramref name="pos"/>.
+    ///
+    /// RoomRegistry always answers with a room, even for a position no player could ever
+    /// occupy: its flood fill starts at the block itself and, if every face of that block
+    /// retains heat, never gets out. What comes back is an enclosed room one block across,
+    /// which is not a room at all - it is a block that seals.
+    ///
+    /// Two things produce that on a container. A Chisel it Everywhere overlay, which makes
+    /// its host position retain heat so that a container set into a wall seals the room the
+    /// way the wall it replaced did; and a container bricked into solid rock. They need
+    /// opposite answers, so the room alone cannot decide - see OpensOntoPlayerSpace.
+    /// </summary>
+    private static bool IsOwnRoom(Room containerRoom, BlockPos pos)
+    {
+        var box = containerRoom.Location;
+        return box.X1 == pos.X && box.X2 == pos.X &&
+               box.Y1 == pos.Y && box.Y2 == pos.Y &&
+               box.Z1 == pos.Z && box.Z2 == pos.Z;
+    }
+
+    /// <summary>
+    /// Whether a self-sealing container faces onto space the player has. This is what the
+    /// player does with it: they do not stand inside the container, they stand next to it.
+    ///
+    /// In an enclosed room that means one of the container's six faces belongs to that room,
+    /// which is true of a chest standing in it and of a chest set into its wall, and false of
+    /// a chest walled into solid rock or sealed away in a closet. Out in the open there is no
+    /// room to ask about, so the answer is left to the line of sight check that follows -
+    /// rock in the way fails it, and the container's own overlay never does, because the
+    /// target block is exempt from blocking sight of itself.
+    /// </summary>
+    private static bool OpensOntoPlayerSpace(Room playerRoom, BlockPos pos, bool strictCheck)
+    {
+        if (strictCheck || playerRoom == null) return true;
+
+        foreach (var facing in BlockFacing.ALLFACES)
+        {
+            if (playerRoom.Contains(pos.AddCopy(facing))) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Find every storage container the player can currently reach and is allowed to open,
     /// using the same room/line-of-sight/reinforcement rules the browser itself uses.
     ///
@@ -803,8 +847,15 @@ public class PackratModSystem : ModSystem
         var room = _roomSystem.GetRoomForPosition(player.Entity.Pos.AsBlockPos);
         if (room is { ExitCount: 0 })
         {
-            startPos = room.Location.Start.AsBlockPos;
-            endPos = room.Location.End.AsBlockPos;
+            // Room.Location is the bounding box of the room's *interior* - the positions the
+            // flood fill actually visited - so a container that is part of the room's shell
+            // sits one block outside it. A plain chest never is, because it retains no heat
+            // and the fill runs straight through it, but a chiseled overlay (Chisel it
+            // Everywhere) makes its host position seal, which is what lets a chest be set
+            // into a wall without leaking the room open. Widen by one so the shell is walked;
+            // the room membership rules below still decide what is kept.
+            startPos = room.Location.Start.AsBlockPos.Sub(1, 1, 1);
+            endPos = room.Location.End.AsBlockPos.Add(1, 1, 1);
             strictCheck = false;
         }
         else
@@ -859,11 +910,30 @@ public class PackratModSystem : ModSystem
             // Room class says so explicitly), so a sealed closet inside a larger room's box
             // would otherwise leak its containers in. Room.Contains consults the room's
             // PosInRoom mask, so it answers real membership rather than box containment.
+            //
+            // The one thing that rule cannot speak to is a container that seals itself, and
+            // so is in no room at all. Its own position then comes back as an enclosed "room"
+            // of exactly one block - itself - which the player is of course not standing in,
+            // and the test above would throw away a chest standing in plain sight. Judge
+            // those by the space beside them instead; see IsOwnRoom.
             var containerRoom = _roomSystem?.GetRoomForPosition(blockPos);
-            if (containerRoom is { ExitCount: 0 } && !containerRoom.Contains(playerBlockPos))
+            var sealedElsewhere = containerRoom is { ExitCount: 0 } && !containerRoom.Contains(playerBlockPos);
+
+            // The ring the in-room bounds were widened by exists for exactly one thing: a
+            // container that has sealed itself into the room's shell. Everything else out
+            // there is outside the room, and the rule above would not catch it - a chest
+            // standing in the open just past a corner of the box is in no sealed room at all.
+            var inWidenedRing = !strictCheck && !room.Location.ContainsOrTouches(blockPos);
+
+            if (sealedElsewhere || inWidenedRing)
             {
-                roomRejects++;
-                return;
+                if (containerRoom == null ||
+                    !IsOwnRoom(containerRoom, blockPos) ||
+                    !OpensOntoPlayerSpace(room, blockPos, strictCheck))
+                {
+                    roomRejects++;
+                    return;
+                }
             }
 
             if (strictCheck)
