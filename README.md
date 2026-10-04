@@ -25,7 +25,7 @@ belongs to whoever is in the room.
 Containers locked against you by block reinforcement are skipped.
 
 The browser has a search box and a sort dropdown (alphabetical, by category, by
-material), and shows which slots belong to which container.
+material, or by spoilage - soonest to spoil first), and shows which slots belong to which container.
 
 ### Insert priority
 

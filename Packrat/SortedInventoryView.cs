@@ -109,7 +109,7 @@ public class SortedInventoryView : InventoryBase
         }
 
         // Collect slots that pass the filter (and are non-empty when sorting)
-        var filteredSlots = new List<(int index, string sortKey, int stackSize)>();
+        var filteredSlots = new List<(int index, SortKey sortKey, int stackSize)>();
 
         for (int i = 0; i < _underlying.Count; i++)
         {
@@ -123,9 +123,9 @@ public class SortedInventoryView : InventoryBase
             if (_filterPredicate != null && !_filterPredicate(i, slot))
                 continue;
 
-            string sortKey = _sortMode != SortMode.None
+            SortKey sortKey = _sortMode != SortMode.None
                 ? GetSortKey(slot, _sortMode)
-                : i.ToString("D6"); // Preserve original order when not sorting
+                : new SortKey(0, i, ""); // Preserve original order when not sorting
             int stackSize = slot?.Itemstack?.StackSize ?? 0;
             filteredSlots.Add((i, sortKey, stackSize));
         }
@@ -135,7 +135,13 @@ public class SortedInventoryView : InventoryBase
         {
             filteredSlots.Sort((a, b) =>
             {
-                int cmp = string.Compare(a.sortKey, b.sortKey, StringComparison.OrdinalIgnoreCase);
+                int cmp = a.sortKey.Group.CompareTo(b.sortKey.Group);
+                if (cmp != 0) return cmp;
+
+                cmp = a.sortKey.Number.CompareTo(b.sortKey.Number);
+                if (cmp != 0) return cmp;
+
+                cmp = string.Compare(a.sortKey.Text, b.sortKey.Text, StringComparison.OrdinalIgnoreCase);
                 if (cmp != 0) return cmp;
 
                 // Larger stacks first
@@ -150,22 +156,27 @@ public class SortedInventoryView : InventoryBase
     }
 
     /// <summary>
+    /// What slots are ordered by: Group, then Number, then Text. Numbers are kept as
+    /// numbers rather than formatted into the text, so close values never round together.
+    /// </summary>
+    private readonly record struct SortKey(int Group, float Number, string Text);
+
+    /// <summary>
     /// Get the sort key for an item based on the sort mode
     /// </summary>
-    private string GetSortKey(ItemSlot slot, SortMode mode)
+    private SortKey GetSortKey(ItemSlot slot, SortMode mode)
     {
         var stack = slot.Itemstack;
         var collectible = stack.Collectible;
-        if (collectible == null) return "zzz"; // Sort unknowns to end
+        if (collectible == null) return new SortKey(int.MaxValue, 0, ""); // Sort unknowns to end
 
         return mode switch
         {
-            SortMode.Alphabetical => GetAlphabeticalKey(stack),
-            SortMode.ByCategory => $"{(int)GetItemCategory(collectible):D2}_{stack.GetName()}",
-            SortMode.ByMaterial => $"{GetMaterialKey(collectible)}_{stack.GetName()}",
-            // Needs padding for the string sort to work with numbers
-            SortMode.ByPerishable => GetRealFreshHoursLeft(slot)?.ToString("0000000000.0000") ?? GetAlphabeticalKey(stack),
-            _ => "zzz"
+            SortMode.Alphabetical => new SortKey(0, 0, GetAlphabeticalKey(stack)),
+            SortMode.ByCategory => new SortKey(0, 0, $"{(int)GetItemCategory(collectible):D2}_{stack.GetName()}"),
+            SortMode.ByMaterial => new SortKey(0, 0, $"{GetMaterialKey(collectible)}_{stack.GetName()}"),
+            SortMode.ByPerishable => GetPerishableKey(slot),
+            _ => new SortKey(int.MaxValue, 0, "")
         };
     }
 
@@ -178,23 +189,30 @@ public class SortedInventoryView : InventoryBase
     }
 
     /// <summary>
-    /// Get the hours left till an item starts to perish in its current container
+    /// Get a sort key for ByPerishable sorting. Groups, in order:
+    /// 0 - already spoiling, most spoiled first
+    /// 1 - fresh and perishing, fewest hours until spoiling first
+    /// 2 - perishable but paused where it is (rate 0, e.g. too hot), alphabetical
+    /// 3 - not perishable, alphabetical
     /// </summary>
-    /// <remarks>Ignores temperature as it is irrelevant for sorting</remarks>
-    private float? GetRealFreshHoursLeft(ItemSlot slot)
+    private SortKey GetPerishableKey(ItemSlot slot)
     {
-        // Get hours left till spoilage without container multiplier
-        var freshHoursLeft = slot.Itemstack.Collectible.UpdateAndGetTransitionState(_underlying.Api.World, slot, EnumTransitionType.Perish)?.FreshHoursLeft;
-        
-        // Return if not perishable
-        if (freshHoursLeft is null)
-            return null;
-        
-        // Get spoilage multiplier for current container
-        var perishMultiplier = slot.Inventory.GetTransitionSpeedMul(EnumTransitionType.Perish, slot.Itemstack);
-        
-        // Calculate real hours left till spoilage
-        return (float)freshHoursLeft / perishMultiplier;
+        var stack = slot.Itemstack;
+        var world = _underlying.Api.World;
+        var state = stack.Collectible.UpdateAndGetTransitionState(world, slot, EnumTransitionType.Perish);
+        if (state == null)
+            return new SortKey(3, 0, GetAlphabeticalKey(stack));
+
+        // Spoil progress doesn't depend on the container's rate, so this group needs no division
+        if (state.TransitionLevel > 0)
+            return new SortKey(0, -state.TransitionLevel, "");
+
+        // The same rate the vanilla tooltip divides by, so the order matches the "fresh for" it shows
+        float rate = stack.Collectible.GetTransitionRateMul(world, slot, EnumTransitionType.Perish);
+        if (rate <= 0)
+            return new SortKey(2, 0, GetAlphabeticalKey(stack));
+
+        return new SortKey(1, state.FreshHoursLeft / rate, "");
     }
 
     /// <summary>
