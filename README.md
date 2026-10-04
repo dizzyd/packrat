@@ -170,6 +170,8 @@ mods by name, every one of which compiles perfectly once the target has moved:
 | `PackratIntegration` | the patch targets still exist, all four patches attach, each exactly once, and chests and crates are still the block entity types the scan registry keys on |
 | `PackratModCompat` | each supported mod's container type resolves *and* lands in Packrat's scan registry, checked against the real mods rather than a string comparison |
 | `PackratInsertPriority` | where a shift-click lands — existing stack beats empty, an empty crate ranks last, a mismatched crate is refused outright, block containers outrank a positionless inventory, and no two containers ever score exactly equal |
+| `PackratBrowserLids` | closing with R, Escape or the title button sends both the inventory-close and block-entity lid-close messages, including repeated opens and changed container sets |
+| `PackratLidBroadcast` | the vanilla server broadcasts the closing viewer's lid state, and an observer leaves the lid open until the last viewer closes |
 | `PackratRooms` | a sealed shell registers as a room with no exits, a container in one preserves food better, and the perish bonus matches the normalised curve exactly |
 | `PackratDiscovery` | which containers the hotkey opens — in-room, range-limited outdoors, non-storage block entities excluded, and a container sealed in a closet left to that closet. Needs `--client` |
 | `PackratChiselOverlay` | a container carrying a Chisel it Everywhere overlay is still found — standing in the room, set into its wall, and out in the open — while one sealed in a closet or bricked into rock stays shut. Needs `--client` and the mod |
@@ -192,6 +194,16 @@ Two of those are worth knowing about if you change the weighting:
   the same zero — so in a warm spot the preference silently did nothing. A test
   that only checks "the cellar wins" cannot tell the two formulas apart; one that
   reproduces the curve can.
+
+The lid suites protect the existing multiplayer close fix from January 2026
+([#5](https://github.com/dizzyd/packrat/issues/5)). They run headlessly using the
+real dialog, inventory, packet-handler and animation-state methods, with controlled
+client/world/network services. Inventory-close alone does not notify observers;
+the separate block-entity close message is required. The fixtures skip GUI
+composition and socket delivery, so a green result is not a two-client rendering
+test. Before closing the report, have a second client watch R/Escape/title-button
+close, reopen, a change of container sets, and two players viewing one chest (the
+last close should shut its lid).
 
 The compat and chisel suites need the `packratcompat` pack (Primitive Survival,
 QP's Storage Controller and Chisel it Everywhere). Without it each test logs
