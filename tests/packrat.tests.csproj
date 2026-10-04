@@ -2,9 +2,8 @@
 
   <!--
     Authoring only. The tests are compiled inside the game from the .cs files in
-    this directory, so nothing here has to be built to run them:
-
-        run.sh ../Packrat/tests (with the mod argument pointing to ../Packrat/Packrat)
+    this directory, so nothing here has to be built to run them - see the
+    Tests section of README.md for the command.
 
     This project exists so an editor can type-check them against the mod and the
     game. Building it is optional and needs VSTESTKIT set.
