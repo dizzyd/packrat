@@ -61,7 +61,7 @@ public class GuiDialogStorageBrowser : GuiDialog
     };
 
     // Sort mode dropdown options
-    private static readonly string[] SortModeNames = { "None", "A-Z", "Category", "Material" };
+    private static readonly string[] SortModeNames = { "None", "A-Z", "Category", "Material", "Perishable" };
 
     public GuiDialogStorageBrowser(
         ICoreClientAPI capi,
