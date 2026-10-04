@@ -949,8 +949,10 @@ public class PackratModSystem : ModSystem
             bool isLocked = _reinforcementSystem?.IsLockedForInteract(blockPos, player) == true;
             if (!isLocked)
             {
-                // Skip empty retrieveOnly containers (e.g., looted ruin chests)
-                // These won't send inventory packets when OnPlayerRightClick is called
+                // Skip empty retrieveOnly containers - looted ruin chests, trunks and baskets.
+                // Vanilla turns an emptied collapsed one into rubble when its inventory
+                // closes, so opening them would crumble every one in range as the browser
+                // shut. (Before 1.22 they also refused to open, which hung the browser.)
                 if (container is BlockEntityGenericTypedContainer typed &&
                     typed.retrieveOnly &&
                     typed.Inventory.Empty)
