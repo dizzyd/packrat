@@ -172,7 +172,24 @@ mods by name, every one of which compiles perfectly once the target has moved:
 | `PackratInsertPriority` | where a shift-click lands — existing stack beats empty, an empty crate ranks last, a mismatched crate is refused outright, block containers outrank a positionless inventory, and no two containers ever score exactly equal |
 | `PackratRooms` | a sealed shell registers as a room with no exits, a container in one preserves food better, and the perish bonus matches the normalised curve exactly |
 | `PackratDiscovery` | which containers the hotkey opens — in-room, range-limited outdoors, non-storage block entities excluded, and a container sealed in a closet left to that closet. Needs `--client` |
+| `PackratRuinContainers` | stocked collapsed chests, trunks and aged baskets open through the same vanilla inventory path; loot vessels have no container inventory. Client cases preserve discovery of stocked retrieve-only containers and skipping of empty ones |
 | `PackratChiselOverlay` | a container carrying a Chisel it Everywhere overlay is still found — standing in the room, set into its wall, and out in the open — while one sealed in a closet or bricked into rock stays shut. Needs `--client` and the mod |
+
+The ruin-container coverage records the distinction relevant to [issue #1](https://github.com/dizzyd/packrat/issues/1).
+In the inspected official 1.21.6 and 1.22.7 implementations, stocked collapsed
+chests, collapsed trunks and aged baskets open through vanilla's `Container`
+behavior. `retrieveOnly` restricts putting items in; it does not require breaking
+the container to take items out. Loot vessels are separate break-to-loot blocks
+without a container block entity, so the browser does not discover them.
+
+The empty-container hang fix is separate: Packrat skips empty retrieve-only
+inventories during discovery. Vanilla 1.21.6 refuses to open those inventories;
+1.22.7 no longer does. These tests preserve Packrat's current discovery behavior
+without imposing a new restriction on stocked containers. The headless opening
+fixtures exercise the real vanilla behavior, inventory manager and Packrat request
+handler with controlled world/network plumbing; the actual client scan cases
+remain marked `RequiresClient`. A different historical or modded ruin chest needs
+its exact block and game/mod version before its behavior can be established.
 
 The priority and room suites assert on the **weight** `GetBestSuitedSlot` returns
 rather than on where an item visibly ends up, because that is where the rules

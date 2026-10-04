@@ -4,7 +4,7 @@
     Authoring only. The tests are compiled inside the game from the .cs files in
     this directory, so nothing here has to be built to run them:
 
-        run.sh ../Packrat/tests --mod ../Packrat/Packrat
+        run.sh ../Packrat/tests (with the mod argument pointing to ../Packrat/Packrat)
 
     This project exists so an editor can type-check them against the mod and the
     game. Building it is optional and needs VSTESTKIT set.
@@ -41,6 +41,10 @@
     </Reference>
     <Reference Include="VSSurvivalMod">
       <HintPath>$(VINTAGE_STORY)/Mods/VSSurvivalMod.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VSEssentials">
+      <HintPath>$(VINTAGE_STORY)/Mods/VSEssentials.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
