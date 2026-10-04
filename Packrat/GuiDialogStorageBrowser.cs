@@ -18,10 +18,15 @@ public class GuiDialogStorageBrowser : GuiDialog
     public override double DrawOrder => 0.2;
     public override bool PrefersUngrabbedMouse => false;
 
+    // Every open builds a new browser, so let the GUI manager drop each one on close
+    // rather than keep every browser of the session loaded until the world ends
+    public override bool UnregisterOnClose => true;
+
     private readonly SortedInventoryView _sortedInventory;
     private readonly List<BlockEntityContainer> _containers;
     private readonly ICoreClientAPI _capi;
     private readonly Action<SortMode> _onSortModeChanged;
+    private bool _disposed;
 
     private const int Cols = 10;
     private const int MaxVisibleRows = 8;
@@ -409,6 +414,34 @@ public class GuiDialogStorageBrowser : GuiDialog
     private void DoSendPacket(object packet)
     {
         _capi.Network.SendPacketClient(packet);
+    }
+
+    public override bool TryOpen(bool withFocus) => !_disposed && base.TryOpen(withFocus);
+
+    public override bool TryClose()
+    {
+        if (_disposed) return false;
+        if (!base.TryClose()) return false;
+
+        // Not now: TryClose is reached from inside the engine's own mouse and key
+        // dispatch, which goes on to this dialog's other elements after it returns
+        _capi.Event.EnqueueMainThreadTask(Dispose, "packrat-browser-dispose");
+        return true;
+    }
+
+    /// <summary>
+    /// Releases the dialog without closing it. The engine disposes dialogs when a world
+    /// is left but does not clear their opened flag, and closing one then would send
+    /// packets and play a sound into a world that is already gone.
+    /// </summary>
+    public override void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        opened = false;
+        focused = false;
+        _sortedInventory.Dispose();
+        base.Dispose();
     }
 
     public override void OnGuiOpened()

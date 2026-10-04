@@ -11,7 +11,7 @@ namespace Packrat;
 /// When SortMode is None, passes through directly to the underlying inventory.
 /// When sorting is active, only non-empty slots are shown, in sorted order.
 /// </summary>
-public class SortedInventoryView : InventoryBase
+public class SortedInventoryView : InventoryBase, IDisposable
 {
     private readonly CompositeInventoryView _underlying;
     private SortMode _sortMode = SortMode.None;
@@ -60,6 +60,16 @@ public class SortedInventoryView : InventoryBase
         }
 
         RebuildDisplayOrder();
+    }
+
+    /// <summary>
+    /// Unsubscribes from the source inventories, which belong to block entities and so
+    /// outlive the browser - left subscribed, each one keeps every past view alive.
+    /// </summary>
+    public void Dispose()
+    {
+        foreach (var inv in _underlying.SourceInventories)
+            inv.SlotModified -= OnSlotModified;
     }
 
     private void OnSlotModified(int slotId)

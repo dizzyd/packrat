@@ -213,7 +213,9 @@ public class PackratModSystem : ModSystem
     public override void StartClientSide(ICoreClientAPI api)
     {
         base.StartClientSide(api);
+        EndClientSession();
         _clientApi = api;
+        api.Event.LeaveWorld += EndClientSession;
 
         // Load client config
         _config = api.LoadModConfig<PackratConfig>($"{ModId}-client.json") ?? new PackratConfig();
@@ -672,6 +674,22 @@ public class PackratModSystem : ModSystem
         {
             _api.Logger.Warning($"[PackRat] Container at {pos} has no OnPlayerRightClick method");
         }
+    }
+
+    /// <summary>
+    /// Drops the client state a world leaves behind. Mod statics survive into the next
+    /// world, and so would a browser left open at disconnect - disposed by the engine
+    /// yet still reporting IsOpened, so the next R would try to close it against the
+    /// old world. The dialog is disposed rather than closed for the same reason.
+    /// </summary>
+    private static void EndClientSession()
+    {
+        ResetBrowseMode();
+        _openedContainers.Clear();
+        _browserDialog?.Dispose();
+        _browserDialog = null;
+        _knownBlockTokens = null;
+        _clientApi = null;
     }
 
     /// <summary>
