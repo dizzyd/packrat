@@ -171,8 +171,17 @@ mods by name, every one of which compiles perfectly once the target has moved:
 | `PackratModCompat` | each supported mod's container type resolves *and* lands in Packrat's scan registry, checked against the real mods rather than a string comparison |
 | `PackratInsertPriority` | where a shift-click lands — existing stack beats empty, an empty crate ranks last, a mismatched crate is refused outright, block containers outrank a positionless inventory, and no two containers ever score exactly equal |
 | `PackratRooms` | a sealed shell registers as a room with no exits, a container in one preserves food better, and the perish bonus matches the normalised curve exactly |
+| `PackratBrowserLifecycle` | client-session teardown, stale callbacks, repeated disposal, normal inventory close, and optional sound failures; headless fixtures exercise actual dialog methods with controlled client services |
 | `PackratDiscovery` | which containers the hotkey opens — in-room, range-limited outdoors, non-storage block entities excluded, and a container sealed in a closet left to that closet. Needs `--client` |
 | `PackratChiselOverlay` | a container carrying a Chisel it Everywhere overlay is still found — standing in the room, set into its wall, and out in the open — while one sealed in a closet or bricked into rock stays shut. Needs `--client` and the mod |
+
+The browser lifecycle suite pins the disconnect/rejoin failure behind issue #6:
+Vintage Story disposes a world's dialog resources without clearing `IsOpened`,
+and mod statics can survive into the next world. Packrat now invalidates its
+client session, silently disposes the browser, and ignores callbacks belonging
+to the old session. Normal R, Escape and title-bar close still close inventories
+before releasing the dialog. The headless fixtures cannot prove rendering or
+real socket delivery; a live client disconnect/rejoin smoke test is still needed.
 
 The priority and room suites assert on the **weight** `GetBestSuitedSlot` returns
 rather than on where an item visibly ends up, because that is where the rules

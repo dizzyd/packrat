@@ -58,6 +58,8 @@ public class PackratModSystem : ModSystem
     private Harmony _harmony;
     private static ICoreAPI _api;
     private static ICoreClientAPI _clientApi;
+    private static PackratModSystem _clientSessionOwner;
+    private ICoreClientAPI _sessionApi;
     private static ICoreServerAPI _serverApi;
 
     private RoomRegistry _roomSystem;
@@ -70,6 +72,7 @@ public class PackratModSystem : ModSystem
     private static GuiDialogStorageBrowser _browserDialog;
     private static int _pendingCrateConfirmation; // Number of crates waiting for server confirmation
     private static long _browseTimeoutCallbackId; // Timeout callback to handle unresponsive containers
+    private static object _browseRequest; // Identity of the current request, including its timeout
 
     // Client config (persisted)
     private static PackratConfig _config;
@@ -210,10 +213,70 @@ public class PackratModSystem : ModSystem
         }
     }
 
+    private void BeginClientSession(ICoreClientAPI api)
+    {
+        // Mod assemblies (and their statics) survive leaving a world. A previous
+        // GuiDialog may even still report IsOpened after the engine disposed it.
+        _clientSessionOwner?.EndClientSession();
+        _sessionApi = api;
+        _clientApi = api;
+        _clientSessionOwner = this;
+        api.Event.LeaveWorld += EndClientSession;
+        api.Event.PlayerJoin += OnClientPlayerJoin;
+    }
+
+    private static bool IsCurrentClientSession(ICoreClientAPI api) =>
+        api != null && ReferenceEquals(api, _clientApi) &&
+        ReferenceEquals(api, _clientSessionOwner?._sessionApi) && !api.IsShuttingDown;
+
+    private void OnClientPlayerJoin(IClientPlayer player)
+    {
+        if (IsCurrentClientSession(_sessionApi) && player == _sessionApi.World?.Player)
+            SendContainerPriority();
+    }
+
+    private void EndClientSession()
+    {
+        var api = _sessionApi;
+        if (api == null) return; // Server instances do not own client state.
+        _sessionApi = null;
+        api.Event.LeaveWorld -= EndClientSession;
+        api.Event.PlayerJoin -= OnClientPlayerJoin;
+
+        // An old client's late Dispose must never tear down a newer session.
+        if (!ReferenceEquals(_clientSessionOwner, this)) return;
+        _clientSessionOwner = null;
+        _clientApi = null;
+        _browseMode = false;
+        _browseRequest = null;
+        if (_browseTimeoutCallbackId != 0)
+        {
+            long callbackId = _browseTimeoutCallbackId;
+            _browseTimeoutCallbackId = 0;
+            api.Event.UnregisterCallback(callbackId);
+        }
+        _pendingPositions.Clear();
+        _pendingCrateConfirmation = 0;
+        _openedContainers.Clear();
+        var dialog = _browserDialog;
+        _browserDialog = null;
+        // Teardown is silent: normal close sends packets and plays a sound.
+        dialog?.Dispose();
+        _knownBlockTokens = null;
+        _roomSystem = null;
+        _reinforcementSystem = null;
+    }
+
+    public override void Dispose()
+    {
+        EndClientSession();
+        base.Dispose();
+    }
+
     public override void StartClientSide(ICoreClientAPI api)
     {
         base.StartClientSide(api);
-        _clientApi = api;
+        BeginClientSession(api);
 
         // Load client config
         _config = api.LoadModConfig<PackratConfig>($"{ModId}-client.json") ?? new PackratConfig();
@@ -229,19 +292,19 @@ public class PackratModSystem : ModSystem
             Lang.Get($"{Mod.Info.ModID}:openall"),
             GlKeys.R,
             HotkeyType.CharacterControls);
-        api.Input.SetHotKeyHandler(hotkey, OpenAll);
+        api.Input.SetHotKeyHandler(hotkey, key => IsCurrentClientSession(api) && OpenAll(key));
 
         // Handle server confirmation for crate inventories
         api.Network
             .GetChannel(Mod.Info.ModID)
-            .SetMessageHandler<OpenManyConfirmMessage>(HandleOpenManyConfirm);
+            .SetMessageHandler<OpenManyConfirmMessage>(msg =>
+            {
+                if (IsCurrentClientSession(api)) HandleOpenManyConfirm(msg);
+            });
 
         // The server re-derives shift-click destinations itself, so it needs this player's
         // priority list before they touch any container
-        api.Event.PlayerJoin += joiningPlayer =>
-        {
-            if (joiningPlayer == api.World?.Player) SendContainerPriority();
-        };
+        // PlayerJoin is registered with the session and detached on leave/dispose.
 
         var parsers = api.ChatCommands.Parsers;
         api.ChatCommands.Create("packrat")
@@ -680,14 +743,16 @@ public class PackratModSystem : ModSystem
     private static void ResetBrowseMode()
     {
         _browseMode = false;
+        _browseRequest = null;
         _pendingPositions.Clear();
         _pendingCrateConfirmation = 0;
 
         // Cancel any pending timeout
         if (_browseTimeoutCallbackId != 0)
         {
-            _clientApi?.Event.UnregisterCallback(_browseTimeoutCallbackId);
+            long callbackId = _browseTimeoutCallbackId;
             _browseTimeoutCallbackId = 0;
+            _clientApi?.Event.UnregisterCallback(callbackId);
         }
     }
 
@@ -695,8 +760,10 @@ public class PackratModSystem : ModSystem
     /// Called when the browse timeout expires. Shows the browser with whatever containers
     /// have responded, giving up on any that haven't (version mismatch, incompatible mods, etc.)
     /// </summary>
-    private static void OnBrowseTimeout(float dt)
+    private static void OnBrowseTimeout(ICoreClientAPI api, object request, float dt)
     {
+        if (!IsCurrentClientSession(api) || !ReferenceEquals(request, _browseRequest)) return;
+
         // Check browse mode first to avoid race with ResetBrowseMode
         if (!_browseMode)
         {
@@ -982,7 +1049,9 @@ public class PackratModSystem : ModSystem
 
     public bool OpenAll(KeyCombination _)
     {
-        var player = _clientApi.World.Player;
+        if (!IsCurrentClientSession(_sessionApi)) return false;
+        var player = _sessionApi.World?.Player;
+        if (player?.Entity == null) return false;
 
         // If browser is already open, close it
         if (_browserDialog != null && _browserDialog.IsOpened())
@@ -992,12 +1061,15 @@ public class PackratModSystem : ModSystem
             return true;
         }
 
+        if (_browseMode) return true; // Do not replace an in-flight request.
+
         var chests = ScanAccessibleContainers(player);
 
         if (chests.Count > 0)
         {
             // Enter browse mode - Harmony patch will intercept OpenInventory packets
             _browseMode = true;
+            _browseRequest = new object();
             _pendingPositions.Clear();
             _openedContainers.Clear();
             _pendingCrateConfirmation = 0;
@@ -1034,12 +1106,15 @@ public class PackratModSystem : ModSystem
             // Track direct access confirmation - we need to wait for server to confirm they are open
             _pendingCrateConfirmation = directAccessCount;
 
+            // Register before sending: a synchronous response may finish the request.
+            // The token also makes an already-queued, cancelled timeout harmless.
+            var api = _sessionApi;
+            var request = _browseRequest;
+            _browseTimeoutCallbackId = api.Event.RegisterCallback(dt => OnBrowseTimeout(api, request, dt), 3000);
+
             // Send request to server to open ALL container inventories
             var msg = OpenManyMessage.FromContainers(chests);
-            _clientApi.Network.GetChannel(Mod.Info.ModID).SendPacket(msg);
-
-            // Register a timeout in case some containers don't respond (version mismatch, incompatible mods, etc.)
-            _browseTimeoutCallbackId = _clientApi.Event.RegisterCallback(OnBrowseTimeout, 3000);
+            api.Network.GetChannel(Mod.Info.ModID).SendPacket(msg);
 
             // If we have no chests (only crates) and no crates, show browser immediately (shouldn't happen)
             // Otherwise, browser will be shown when:
@@ -1056,6 +1131,8 @@ public class PackratModSystem : ModSystem
 
     private void HandleOpenManyConfirm(OpenManyConfirmMessage msg)
     {
+        if (!IsCurrentClientSession(_sessionApi) || !_browseMode) return;
+
         _pendingCrateConfirmation = 0;
 
         // Remove any positions that the server skipped (e.g., due to permission denial)
@@ -1077,7 +1154,8 @@ public class PackratModSystem : ModSystem
 
     private static void ShowBrowser()
     {
-        if (_clientApi == null || _openedContainers.Count == 0)
+        if (!IsCurrentClientSession(_clientApi) || !_browseMode) return;
+        if (_openedContainers.Count == 0)
         {
             ResetBrowseMode();
             return;
@@ -1115,8 +1193,20 @@ public class PackratModSystem : ModSystem
         sortedView.SortMode = _config?.SortMode ?? SortMode.None;
 
         // Create and show the browser dialog
-        _browserDialog = new GuiDialogStorageBrowser(_clientApi, sortedView, _openedContainers, OnSortModeChanged);
-        _browserDialog.TryOpen();
+        var api = _clientApi;
+        var dialog = new GuiDialogStorageBrowser(api, sortedView, _openedContainers,
+            mode => { if (IsCurrentClientSession(api)) OnSortModeChanged(mode); },
+            () => IsCurrentClientSession(api));
+        _browserDialog = dialog;
+        dialog.OnClosed += () =>
+        {
+            if (ReferenceEquals(_browserDialog, dialog))
+            {
+                _browserDialog = null;
+                _openedContainers.Clear();
+            }
+        };
+        dialog.TryOpen();
         ResetBrowseMode();
     }
 
@@ -1126,6 +1216,9 @@ public class PackratModSystem : ModSystem
     /// </summary>
     public static bool OnReceivedServerPacket_Prefix(int packetid, byte[] data, BlockEntityContainer __instance)
     {
+        // A delayed packet for an old world's block entity cannot join a new request.
+        if (!IsCurrentClientSession(_clientApi) ||
+            !ReferenceEquals(__instance.Api?.World, _clientApi.World)) return true;
         return HandleServerPacket(packetid, data, __instance.Inventory, __instance.Pos);
     }
 

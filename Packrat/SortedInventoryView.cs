@@ -11,7 +11,7 @@ namespace Packrat;
 /// When SortMode is None, passes through directly to the underlying inventory.
 /// When sorting is active, only non-empty slots are shown, in sorted order.
 /// </summary>
-public class SortedInventoryView : InventoryBase
+public class SortedInventoryView : InventoryBase, IDisposable
 {
     private readonly CompositeInventoryView _underlying;
     private SortMode _sortMode = SortMode.None;
@@ -24,6 +24,7 @@ public class SortedInventoryView : InventoryBase
 
     // Track if display order needs rebuilding
     private bool _isDirty;
+    private bool _disposed;
 
     // Filter predicate for search filtering
     private System.Func<int, ItemSlot, bool> _filterPredicate;
@@ -60,6 +61,15 @@ public class SortedInventoryView : InventoryBase
         }
 
         RebuildDisplayOrder();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        foreach (var inv in _underlying.SourceInventories)
+            inv.SlotModified -= OnSlotModified;
+        _filterPredicate = null;
     }
 
     private void OnSlotModified(int slotId)

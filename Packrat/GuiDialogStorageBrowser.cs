@@ -17,11 +17,14 @@ public class GuiDialogStorageBrowser : GuiDialog
     public override string ToggleKeyCombinationCode => null;
     public override double DrawOrder => 0.2;
     public override bool PrefersUngrabbedMouse => false;
+    public override bool UnregisterOnClose => true;
 
     private readonly SortedInventoryView _sortedInventory;
     private readonly List<BlockEntityContainer> _containers;
     private readonly ICoreClientAPI _capi;
     private readonly Action<SortMode> _onSortModeChanged;
+    private readonly System.Func<bool> _isSessionActive;
+    private bool _disposed;
 
     private const int Cols = 10;
     private const int MaxVisibleRows = 8;
@@ -67,13 +70,15 @@ public class GuiDialogStorageBrowser : GuiDialog
         ICoreClientAPI capi,
         SortedInventoryView sortedInventory,
         List<BlockEntityContainer> containers,
-        Action<SortMode> onSortModeChanged = null)
+        Action<SortMode> onSortModeChanged = null,
+        System.Func<bool> isSessionActive = null)
         : base(capi)
     {
         _capi = capi;
         _sortedInventory = sortedInventory;
-        _containers = containers;
+        _containers = new List<BlockEntityContainer>(containers);
         _onSortModeChanged = onSortModeChanged;
+        _isSessionActive = isSessionActive;
 
         // Make dialog movable by default (set initial position if none stored)
         if (_capi.Gui.GetDialogPosition(DialogName) == null)
@@ -220,6 +225,7 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     private void OnSortModeSelected(string code, bool selected)
     {
+        if (!CanUseSession) return;
         int index = Array.IndexOf(SortModeNames, code);
         if (index < 0) return;
 
@@ -306,6 +312,7 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     private void OnScrollbarNewValue(float value)
     {
+        if (!CanUseSession) return;
         var slotGrid = SingleComposer.GetSlotGrid("slotgrid");
         if (slotGrid != null)
         {
@@ -325,6 +332,7 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     private void OnSearchTextChanged(string text)
     {
+        if (!CanUseSession) return;
         _searchFilter = text?.Trim().ToLowerInvariant() ?? "";
 
         _matchedMaterials.Clear();
@@ -408,18 +416,63 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     private void DoSendPacket(object packet)
     {
+        if (!CanUseSession) return;
         _capi.Network.SendPacketClient(packet);
+    }
+
+    private bool CanUseSession => !_disposed && (_isSessionActive?.Invoke() ?? true) &&
+        !_capi.IsShuttingDown && _capi.World?.Player?.Entity != null;
+
+    public override bool TryOpen(bool withFocus) => CanUseSession && base.TryOpen(withFocus);
+
+    public override bool TryClose()
+    {
+        if (_disposed) return false;
+        if (!CanUseSession)
+        {
+            Dispose();
+            return true;
+        }
+        bool closed = base.TryClose();
+        if (closed) Dispose();
+        return closed;
+    }
+
+    public override void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        // GuiDialog.Dispose does not clear this flag. Do not call TryClose here:
+        // the world may already be gone, so inventory/network/audio are unavailable.
+        opened = false;
+        focused = false;
+        _sortedInventory?.Dispose();
+        base.Dispose();
+    }
+
+    private void PlayBrowserSound(string sound)
+    {
+        if (!CanUseSession) return;
+        try
+        {
+            _capi.World.PlaySoundAt(new AssetLocation(sound), _capi.World.Player.Entity);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Optional feedback must not turn a shutdown race into a client crash.
+        }
     }
 
     public override void OnGuiOpened()
     {
         base.OnGuiOpened();
-        _capi.World.PlaySoundAt(new AssetLocation("sounds/block/chestopen"), _capi.World.Player.Entity);
+        PlayBrowserSound("sounds/block/chestopen");
     }
 
     public override void OnGuiClosed()
     {
         base.OnGuiClosed();
+        if (!CanUseSession) return;
 
         var player = _capi.World.Player;
 
@@ -439,11 +492,12 @@ public class GuiDialogStorageBrowser : GuiDialog
             }
         }
 
-        _capi.World.PlaySoundAt(new AssetLocation("sounds/block/chestclose"), player.Entity);
+        PlayBrowserSound("sounds/block/chestclose");
     }
 
     public override void OnKeyDown(KeyEvent args)
     {
+        if (!CanUseSession) return;
         // Focus search box on /
         if (args.KeyCode == (int)GlKeys.Slash)
         {
@@ -463,6 +517,7 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     public override void OnKeyPress(KeyEvent args)
     {
+        if (!CanUseSession) return;
         if (_suppressNextKeyPress)
         {
             _suppressNextKeyPress = false;
@@ -475,6 +530,7 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     public override void OnRenderGUI(float deltaTime)
     {
+        if (!CanUseSession) return;
         base.OnRenderGUI(deltaTime);
 
         // Check if slot count changed and recompose if needed
